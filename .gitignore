@@ -1,0 +1,5 @@
+pins
+pinsdir
+*.pin
+*.swp
+__pycache__
