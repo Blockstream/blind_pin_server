@@ -1,4 +1,4 @@
-FROM debian:buster@sha256:ba4a437377a0c450ac9bb634c3754a17b1f814ce6fa3157c0dc9eef431b29d1f
+FROM debian:buster@sha256:33a8231b1ec668c044b583971eea94fff37151de3a1d5a3737b08665300c8a0b
 
 RUN apt update -qq && apt upgrade --no-install-recommends -yqq \
   && apt install --no-install-recommends -yqq procps python3-pip uwsgi uwsgi-plugin-python3 python3-setuptools nginx runit \ 
