@@ -14,6 +14,20 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    services:
+      # Run redis to test pinserver with redis backend
+      redis:
+        image: redis
+        # Set health checks to wait until redis has started
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          # Maps port 6379 on service container to the host
+          - 6379:6379
+
     steps:
     - uses: actions/checkout@v2
     - name: Set up Python 3.7
@@ -29,9 +43,21 @@ jobs:
       run: |
         pycodestyle --max-line-length=100 *.py test/*.py
 
-    - name: Test with unittest
+    - name: Test with filesystem backend
       run: |
         cp test_keys/* ../
         cd ..
-        PINSERVER_PORT="1234" python -m unittest -v
+        python -m unittest -v
+      env:
+        PINSERVER_PORT: 1234
+
+    - name: Test with Redis backend
+      run: |
+        cp test_keys/* ../
+        cd ..
+        python -m unittest -v
+      env:
+        PINSERVER_PORT: 1234
+        REDIS_HOST: localhost
+        REDIS_PORT: 6379
 
