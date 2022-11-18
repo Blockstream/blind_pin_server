@@ -6,6 +6,7 @@ from .server import PINServerECDH
 from .pindb import PINDb
 from wallycore import hex_from_bytes, hex_to_bytes, AES_KEY_LEN_256, \
     AES_BLOCK_LEN
+from dotenv import load_dotenv
 
 b2h = hex_from_bytes
 h2b = hex_to_bytes
@@ -13,7 +14,9 @@ h2b = hex_to_bytes
 # Time we will retain active sessions, in seconds.
 # ie. maximum time allowed 'start_handshake' (which creates the session)
 # and the get-/set-pin call, which utilises it.
-SESSION_LIFETIME = 30
+# Can be set in environment, defaults to 5mins
+load_dotenv()
+SESSION_LIFETIME = int(os.environ.get('SESSION_LIFETIME', 300))
 
 
 def flask_server():
