@@ -10,17 +10,17 @@ Green.
 
 ## To generate a new key
 
-`python -m venv -p python3 venv`
+`python -m venv venv`
 
 `. venv/bin/activate`
 
-`pip install --require-hashes -r pinserver/requirements.txt`
+`pip install --require-hashes -r requirements.txt`
 
-`python -m pinserver.generateserverkey`
+`PYTHONPATH=.. python -m blind_pin_server.generateserverkey`
 
 ## Build the docker image
 
-docker build -f pinserver/Dockerfile pinserver/ -t dockerized_pinserver
+docker build -f Dockerfile . -t dockerized_pinserver
 
 ## Prepare the directory for all the pins
 

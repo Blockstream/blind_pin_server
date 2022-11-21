@@ -13,7 +13,8 @@ Jinja2==3.0.3 \
     --hash=sha256:611bb273cd68f3b993fabdc4064fc858c5b47a973cb5aa7999ec1ba405c87cd7
 MarkupSafe==2.0.1 \
     --hash=sha256:60bf42e36abfaf9aff1f50f52644b336d4f0a3fd6d8a60ca0d054ac9f713a864 \
-    --hash=sha256:594c67807fb16238b30c44bdf74f36c02cdf22d1c8cda91ef8a0ed8dabf5620a
+    --hash=sha256:594c67807fb16238b30c44bdf74f36c02cdf22d1c8cda91ef8a0ed8dabf5620a \
+    --hash=sha256:1f2ade76b9903f39aa442b4aadd2177decb66525062db244b35d71d0ee8599b6
 typing_extensions==4.0.1 \
     --hash=sha256:7f001e5ac290a0c0401508864c7ec868be4e701886d5b573a9528ed3973d9d3b \
     --hash=sha256:4ca091dea149f945ec56afb48dae714f21e8692ef22a395223bcd328961b6a0e
@@ -44,7 +45,8 @@ deprecated==1.2.13 \
     --hash=sha256:43ac5335da90c31c24ba028af536a91d41d53f9e6901ddb021bcc572ce44e38d
 wrapt==1.13.3 \
     --hash=sha256:0cb23d36ed03bf46b894cfec777eec754146d68429c30431c99ef28482b5c1df \
-    --hash=sha256:1fea9cd438686e6682271d36f3481a9f3636195578bab9ca3382e2f5f01fc185
+    --hash=sha256:1fea9cd438686e6682271d36f3481a9f3636195578bab9ca3382e2f5f01fc185 \
+    --hash=sha256:25b1b1d5df495d82be1c9d2fad408f7ce5ca8a38085e2da41bb63c914baadff7
 
 # direct deps
 requests==2.26.0 \
