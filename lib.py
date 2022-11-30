@@ -7,21 +7,14 @@ from wallycore import AES_BLOCK_LEN, AES_FLAG_DECRYPT, AES_FLAG_ENCRYPT, \
 
 def encrypt(aes_key, plaintext):
     iv = os.urandom(AES_BLOCK_LEN)
-    size = (int(len(plaintext) / AES_BLOCK_LEN) + 1) * AES_BLOCK_LEN
-    encrypted = bytearray(size)
-    written = aes_cbc(aes_key, iv, plaintext, AES_FLAG_ENCRYPT, encrypted)
-    return iv + encrypted[:written]
+    encrypted = aes_cbc(aes_key, iv, plaintext, AES_FLAG_ENCRYPT)
+    return iv + encrypted
 
 
 def decrypt(aes_key, encrypted):
-    plaintext = bytearray(len(encrypted) - AES_BLOCK_LEN)
     iv = encrypted[:AES_BLOCK_LEN]
-    written = aes_cbc(aes_key,
-                      iv,
-                      encrypted[AES_BLOCK_LEN:],
-                      AES_FLAG_DECRYPT,
-                      plaintext)
-    return plaintext[:written]
+    payload = encrypted[AES_BLOCK_LEN:]
+    return aes_cbc(aes_key, iv, payload, AES_FLAG_DECRYPT)
 
 
 class E_ECDH(object):
