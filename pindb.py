@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 b2h = hex_from_bytes
 h2b = hex_to_bytes
 
-VERSION = 0
+VERSION_SUPPORTED = 0
+VERSION_LATEST = 1
 
 load_dotenv()
 
@@ -104,7 +105,7 @@ class PINDb(object):
     storage = get_storage()
 
     @classmethod
-    def _extract_fields(cls, cke, data):
+    def _extract_fields(cls, cke, data, replay_counter=None):
         assert len(data) == (2*SHA256_LEN) + EC_SIGNATURE_RECOVERABLE_LEN
 
         # secret + entropy + sig
@@ -112,15 +113,21 @@ class PINDb(object):
         entropy = data[SHA256_LEN: SHA256_LEN + SHA256_LEN]
         sig = data[SHA256_LEN + SHA256_LEN:]
 
+        # make sure the client_public_key signs over the replay counter too if provided
+        if replay_counter is not None:
+            assert len(replay_counter) == 4
+            signed_msg = sha256(cke + replay_counter + pin_secret + entropy)
+        else:
+            signed_msg = sha256(cke + pin_secret + entropy)
+
         # We know mesage the signature is for, so can recover the public key
-        signed_msg = sha256(cke + pin_secret + entropy)
         client_public_key = ec_sig_to_public_key(signed_msg, sig)
 
         return pin_secret, entropy, client_public_key
 
     @classmethod
     def _save_pin_fields(cls, pin_pubkey_hash, hash_pin_secret, aes_key,
-                         pin_pubkey, aes_pin_data_key, count=0):
+                         pin_pubkey, aes_pin_data_key, count, replay_counter=None):
 
         # the data is encrypted and then hmac'ed for authentication
         # the encrypted data can't be read by us without the user
@@ -129,9 +136,14 @@ class PINDb(object):
         storage_aes_key = hmac_sha256(aes_pin_data_key, pin_pubkey)
         count_bytes = struct.pack('B', count)
         plaintext = hash_pin_secret + aes_key + count_bytes
+        version_bytes = struct.pack('B', VERSION_SUPPORTED)
+        if replay_counter is not None:
+            # if this is v2 we save the latest replay_counter and update the version
+            plaintext += replay_counter
+            version_bytes = struct.pack('B', VERSION_LATEST)
         encrypted = encrypt(storage_aes_key, plaintext)
         pin_auth_key = hmac_sha256(aes_pin_data_key, pin_pubkey_hash)
-        version_bytes = struct.pack('B', VERSION)
+
         hmac_payload = hmac_sha256(pin_auth_key, version_bytes + encrypted)
 
         cls.storage.set(pin_pubkey_hash, version_bytes + hmac_payload + encrypted)
@@ -139,7 +151,7 @@ class PINDb(object):
         return aes_key
 
     @classmethod
-    def _load_pin_fields(cls, pin_pubkey_hash, pin_pubkey, aes_pin_data_key):
+    def _load_pin_fields(cls, pin_pubkey_hash, pin_pubkey, aes_pin_data_key, replay_counter=None):
 
         data = cls.storage.get(pin_pubkey_hash)
         assert len(data) == 129
@@ -147,8 +159,13 @@ class PINDb(object):
 
         # verify integrity of encrypted data first
         pin_auth_key = hmac_sha256(aes_pin_data_key, pin_pubkey_hash)
-        version_bytes = struct.pack('B', VERSION)
-        assert version_bytes == version
+        version_bytes = struct.pack('B', VERSION_LATEST)
+        len_plaintext = 32 + 32 + 1 + 4
+        if version_bytes != version:
+            # this is the old database, check if we are upgrading
+            version_bytes = struct.pack('B', VERSION_SUPPORTED)
+            len_plaintext -= 4
+            assert version_bytes == version
         hmac_payload = hmac_sha256(pin_auth_key, version_bytes + encrypted)
 
         assert hmac_payload == hmac_received
@@ -156,12 +173,24 @@ class PINDb(object):
         storage_aes_key = hmac_sha256(aes_pin_data_key, pin_pubkey)
         plaintext = decrypt(storage_aes_key, encrypted)
 
-        assert len(plaintext) == 32 + 32 + 1
+        assert len(plaintext) == len_plaintext, len(plaintext)
 
         hash_pin_secret, aes_key = plaintext[:32], plaintext[32:64]
         count = struct.unpack('B', plaintext[64: 64 + struct.calcsize('B')])[0]
 
-        return hash_pin_secret, aes_key, count
+        replay_local = None
+        if len_plaintext == 69:
+            replay_local = plaintext[65:69]
+            replay_local = int.from_bytes(replay_local, byteorder='little',
+                                          signed=False)
+        if replay_local is not None and replay_counter is not None:
+            # if this is v2 and the db is already upgraded we enforce the
+            # anti replay
+            replay_remote = int.from_bytes(replay_counter, byteorder='little',
+                                           signed=False)
+            assert replay_remote > replay_local
+
+        return hash_pin_secret, aes_key, count, replay_local
 
     @classmethod
     def make_client_aes_key(self, pin_secret, saved_key):
@@ -173,21 +202,25 @@ class PINDb(object):
 
     # Get existing aes_key given pin fields
     @classmethod
-    def get_aes_key_impl(cls, pin_pubkey, pin_secret, aes_pin_data_key):
+    def get_aes_key_impl(cls, pin_pubkey, pin_secret, aes_pin_data_key, replay_counter=None):
         # Load the data from the pubkey
         pin_pubkey_hash = bytes(sha256(pin_pubkey))
-        saved_hps, saved_key, counter = cls._load_pin_fields(pin_pubkey_hash,
-                                                             pin_pubkey,
-                                                             aes_pin_data_key)
+        saved_hps, saved_key, counter, replay_local = cls._load_pin_fields(pin_pubkey_hash,
+                                                                           pin_pubkey,
+                                                                           aes_pin_data_key,
+                                                                           replay_counter)
+        if replay_local is not None:
+            replay_local = replay_local.to_bytes(4, byteorder='little', signed=False)
 
         # Check that the pin provided matches that saved
         hash_pin_secret = sha256(pin_secret)
         if compare_digest(saved_hps, hash_pin_secret):
             # pin-secret matches - correct pin
-            if counter != 0:
-                # Zero the 'bad guess counter'
+            # Zero the 'bad guess counter' and/or update the replay_counter
+            if counter != 0 or replay_counter:
                 cls._save_pin_fields(pin_pubkey_hash, saved_hps, saved_key,
-                                     pin_pubkey, aes_pin_data_key)
+                                     pin_pubkey, aes_pin_data_key, 0,
+                                     replay_counter or replay_local)
 
             # return the saved key
             return saved_key
@@ -195,29 +228,35 @@ class PINDb(object):
         # user provided wrong pin
         if counter >= 2:
             # pin failed 3 times, overwrite and then remove secret
+
+            max_replay = 4294967295
             cls._save_pin_fields(pin_pubkey_hash,
                                  saved_hps,
                                  bytearray(AES_KEY_LEN_256),
                                  pin_pubkey,
-                                 aes_pin_data_key)
+                                 aes_pin_data_key, 3,
+                                 max_replay.to_bytes(4,
+                                                     byteorder='little',
+                                                     signed=False))
             cls.storage.remove(pin_pubkey_hash)
             raise Exception("Too many attempts")
         else:
             # increment counter
             cls._save_pin_fields(pin_pubkey_hash, saved_hps, saved_key, pin_pubkey,
-                                 aes_pin_data_key, counter + 1)
+                                 aes_pin_data_key, counter + 1,
+                                 replay_counter or replay_local)
             raise Exception("Invalid PIN")
 
     # Get existing aes_key given pin fields, or junk if pin or pubkey bad
     @classmethod
-    def get_aes_key(cls, cke, payload, aes_pin_data_key):
-        pin_secret, _, pin_pubkey = cls._extract_fields(cke, payload)
+    def get_aes_key(cls, cke, payload, aes_pin_data_key, replay_counter=None):
+        pin_secret, _, pin_pubkey = cls._extract_fields(cke, payload, replay_counter)
 
         # Translate internal exception and bad-pin into junk key
         try:
             saved_key = cls.get_aes_key_impl(pin_pubkey,
                                              pin_secret,
-                                             aes_pin_data_key)
+                                             aes_pin_data_key, replay_counter)
         except Exception as e:
             # return junk key
             saved_key = os.urandom(AES_KEY_LEN_256)
@@ -227,18 +266,24 @@ class PINDb(object):
 
     # Set pin fields, return new aes_key
     @classmethod
-    def set_pin(cls, cke, payload, aes_pin_data_key):
-        pin_secret, entropy, pin_pubkey = cls._extract_fields(cke, payload)
+    def set_pin(cls, cke, payload, aes_pin_data_key, replay_counter=None):
+        pin_secret, entropy, pin_pubkey = cls._extract_fields(cke, payload, replay_counter)
 
         # Make a new aes-key to persist from our and client entropy
         our_random = os.urandom(32)
         new_key = hmac_sha256(our_random, entropy)
 
+        assert replay_counter is None or replay_counter == b'\x00\x00\x00\x00'
+
         # Persist the pin fields
         pin_pubkey_hash = bytes(sha256(pin_pubkey))
         hash_pin_secret = sha256(pin_secret)
+        replay_bytes = None
+        if replay_counter is not None:
+            replay_init = 0
+            replay_bytes = replay_init.to_bytes(4, byteorder='little', signed=False)
         saved_key = cls._save_pin_fields(pin_pubkey_hash, hash_pin_secret, new_key,
-                                         pin_pubkey, aes_pin_data_key)
+                                         pin_pubkey, aes_pin_data_key, 0, replay_bytes)
 
         # Combine saved key with (not persisted) pin-secret
         return cls.make_client_aes_key(pin_secret, saved_key)

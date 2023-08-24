@@ -2,7 +2,7 @@ import time
 import json
 import os
 from flask import Flask, request, jsonify
-from .server import PINServerECDH
+from .server import PINServerECDH, PINServerECDHv2
 from .pindb import PINDb
 from wallycore import hex_from_bytes, hex_to_bytes, AES_KEY_LEN_256, \
     AES_BLOCK_LEN
@@ -55,33 +55,58 @@ def flask_server():
         return jsonify({'ske': ske,
                         'sig': b2h(sig)})
 
+    def _complete_server_call_v1(pin_func, udata):
+        ske = udata['ske']
+        assert 'replay_counter' not in udata
+
+        # Get associated session (ensuring not stale)
+        _cleanup_expired_sessions()
+        e_ecdh_server = sessions[ske]
+
+        # get/set pin and get response data
+        encrypted_key, hmac = e_ecdh_server.call_with_payload(
+                h2b(udata['cke']),
+                h2b(udata['encrypted_data']),
+                h2b(udata['hmac_encrypted_data']),
+                pin_func)
+
+        # Expecting to return an encrypted aes-key
+        assert len(encrypted_key) == AES_KEY_LEN_256 + (2*AES_BLOCK_LEN)
+
+        # Cleanup session
+        del sessions[ske]
+        _cleanup_expired_sessions()
+
+        # Return response
+        return jsonify({'encrypted_key': b2h(encrypted_key),
+                        'hmac': b2h(hmac)})
+
+    def _complete_server_call_v2(pin_func, udata):
+        assert 'ske' not in udata
+        assert len(udata['replay_counter']) == 8
+        cke = h2b(udata['cke'])
+        replay_counter = h2b(udata['replay_counter'])
+        e_ecdh_server = PINServerECDHv2(replay_counter, cke)
+        encrypted_key, hmac = e_ecdh_server.call_with_payload(
+                cke,
+                h2b(udata['encrypted_data']),
+                h2b(udata['hmac_encrypted_data']),
+                pin_func)
+
+        # Expecting to return an encrypted aes-key
+        assert len(encrypted_key) == AES_KEY_LEN_256 + (2*AES_BLOCK_LEN)
+
+        # Return response
+        return jsonify({'encrypted_key': b2h(encrypted_key),
+                        'hmac': b2h(hmac)})
+
     def _complete_server_call(pin_func):
         try:
             # Get request data
             udata = json.loads(request.data)
-            ske = udata['ske']
-
-            # Get associated session (ensuring not stale)
-            _cleanup_expired_sessions()
-            e_ecdh_server = sessions[ske]
-
-            # get/set pin and get response data
-            encrypted_key, hmac = e_ecdh_server.call_with_payload(
-                    h2b(udata['cke']),
-                    h2b(udata['encrypted_data']),
-                    h2b(udata['hmac_encrypted_data']),
-                    pin_func)
-
-            # Expecting to return an encrypted aes-key
-            assert len(encrypted_key) == AES_KEY_LEN_256 + (2*AES_BLOCK_LEN)
-
-            # Cleanup session
-            del sessions[ske]
-            _cleanup_expired_sessions()
-
-            # Return response
-            return jsonify({'encrypted_key': b2h(encrypted_key),
-                            'hmac': b2h(hmac)})
+            if 'replay_counter' in udata:
+                return _complete_server_call_v2(pin_func, udata)
+            return _complete_server_call_v1(pin_func, udata)
 
         except Exception as e:
             app.logger.error("Error: {} {}".format(type(e), e))

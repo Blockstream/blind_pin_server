@@ -7,7 +7,7 @@ from multiprocessing import Process
 from hmac import compare_digest
 import requests
 
-from ..client import PINClientECDH
+from ..client import PINClientECDH, PINClientECDHv2
 from ..server import PINServerECDH
 from ..pindb import PINDb
 
@@ -107,12 +107,21 @@ class PINServerTest(unittest.TestCase):
         client = PINClientECDH(self.static_server_public_key)
         return self.start_handshake(client)
 
+    # Make a new ephemeral client and initialise with tweaked server key
+    def new_client_handshakev2(self, replay_counter):
+        client = PINClientECDHv2(self.static_server_public_key, replay_counter)
+        return client
+
     # Make the server call to get/set the pin - returns the decrypted response
-    def server_call(self, private_key, client, endpoint, pin_secret, entropy):
+    def server_call(self, private_key, client, endpoint, pin_secret, entropy, replay_counter=None):
         # Make and encrypt the payload (ie. pin secret)
         ske, cke = client.get_key_exchange()
+        cke_sha = cke
+        if replay_counter is not None:
+            assert len(replay_counter) == 4
+            cke_sha = cke + replay_counter
         sig = ec_sig_from_bytes(private_key,
-                                sha256(cke + pin_secret + entropy),
+                                sha256(cke_sha + pin_secret + entropy),
                                 EC_FLAG_ECDSA | EC_FLAG_RECOVERABLE)
         payload = pin_secret + entropy + sig
 
@@ -123,6 +132,9 @@ class PINServerTest(unittest.TestCase):
                    'cke': b2h(cke),
                    'encrypted_data': b2h(encrypted),
                    'hmac_encrypted_data': b2h(hmac)}
+        if replay_counter:
+            urldata['replay_counter'] = b2h(replay_counter)
+            del urldata['ske']
         response = self.post(endpoint, urldata)
         encrypted = h2b(response['encrypted_key'])
         hmac = h2b(response['hmac'])
@@ -141,6 +153,18 @@ class PINServerTest(unittest.TestCase):
         client = self.new_client_handshake()
         return self.server_call(
             private_key, client, 'set_pin', pin_secret, entropy)
+
+    def get_pinv2(self, private_key, pin_secret, entropy, replay_counter):
+        # Create new ephemeral client, initiate handshake, and make call
+        client = self.new_client_handshakev2(replay_counter)
+        return self.server_call(
+            private_key, client, 'get_pin', pin_secret, entropy, replay_counter)
+
+    def set_pinv2(self, private_key, pin_secret, entropy, replay_counter):
+        # Create new ephemeral client, initiate handshake, and make call
+        client = self.new_client_handshakev2(replay_counter)
+        return self.server_call(
+            private_key, client, 'set_pin', pin_secret, entropy, replay_counter)
 
     # Tests
     def test_get_index(self):
@@ -355,6 +379,148 @@ class PINServerTest(unittest.TestCase):
         aeskey = self.server_call(priv_key, client, 'get_pin', pin_secret,
                                   self.new_entropy())
         self.assertTrue(compare_digest(aeskey, aeskey_s))
+
+    def test_v2_happypath_with_simulated_replay(self):
+        # Make ourselves a static key pair for this logical client
+        priv_key, _, _ = self.new_static_client_keys()
+
+        # The 'correct' client pin
+        pin_secret = self.new_pin_secret()
+
+        # assert you can't set pin with a replay_counter different than 0
+        with self.assertRaises(ValueError) as cm:
+            replay_counter = 1
+            self.set_pinv2(priv_key, pin_secret, self.new_entropy(),
+                           replay_counter.to_bytes(4,
+                                                   byteorder='little',
+                                                   signed=False))
+
+        # set the pin secret to get a new aes key
+        replay_counter = 0
+        aeskey_s = self.set_pinv2(priv_key, pin_secret, self.new_entropy(),
+                                  replay_counter.to_bytes(4, byteorder='little',
+                                  signed=False))
+
+        # retrieve the key again with our correct pin secret
+        replay_counter = 1
+        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
+                                replay_counter.to_bytes(4, byteorder='little',
+                                signed=False))
+
+        # Now let's compare
+        self.assertTrue(compare_digest(aeskey, aeskey_s))
+
+        for i in range(5):
+            # Simulate a reply attempt failing N times, it doesn't affect pin
+            # attempts / dos
+            aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
+                                    replay_counter.to_bytes(4,
+                                                            byteorder='little',
+                                                            signed=False))
+            self.assertFalse(compare_digest(aeskey, aeskey_s))
+
+        # retrieve the key again using v1
+        aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy())
+        self.assertTrue(compare_digest(aeskey_g, aeskey_s))
+
+        # Incrementing the counter monotonically works again
+        replay_counter = 2
+        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
+                                replay_counter.to_bytes(4, byteorder='little',
+                                                        signed=False))
+        self.assertTrue(compare_digest(aeskey, aeskey_s))
+
+        # Incrementing the counter monotonically works even in case of network
+        # errors where some request is missed
+        replay_counter = 4
+        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
+                                replay_counter.to_bytes(4, byteorder='little',
+                                                        signed=False))
+        self.assertTrue(compare_digest(aeskey, aeskey_s))
+
+        bad_secret = self.new_pin_secret()
+        for i in range(3):
+            # exaust pin attmempts with good replay_counter
+            replay_counter = i + 5
+            replay_counter = replay_counter.to_bytes(4, byteorder='little', signed=False)
+            aeskey = self.get_pinv2(priv_key, bad_secret, self.new_entropy(), replay_counter)
+            self.assertFalse(compare_digest(aeskey, aeskey_s))
+
+        # retrieve the key again using v1 should fail
+        aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy())
+        self.assertFalse(compare_digest(aeskey_g, aeskey_s))
+
+        # Incrementing the counter monotonically also fails
+        replay_counter = 8
+        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
+                                replay_counter.to_bytes(4, byteorder='little',
+                                                        signed=False))
+        self.assertFalse(compare_digest(aeskey, aeskey_s))
+
+    def test_v2_happypath_with_simulated_replay_upgrade(self):
+        # Make ourselves a static key pair for this logical client
+        priv_key, _, _ = self.new_static_client_keys()
+
+        # The 'correct' client pin
+        pin_secret = self.new_pin_secret()
+
+        # Make a new client and set the pin secret to get a new aes key
+        aeskey_s = self.set_pin(priv_key, pin_secret, self.new_entropy())
+        self.assertEqual(len(aeskey_s), AES_KEY_LEN_256)
+
+        # retrieve the key again with our correct pin secret
+        replay_counter = 0
+        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
+                                replay_counter.to_bytes(4, byteorder='little',
+                                signed=False))
+
+        # Now let's compare
+        self.assertTrue(compare_digest(aeskey, aeskey_s))
+
+        for i in range(5):
+            # Simulate a reply attempt failing N times, it doesn't affect pin
+            # attempts / dos
+            aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
+                                    replay_counter.to_bytes(4,
+                                                            byteorder='little',
+                                                            signed=False))
+            self.assertFalse(compare_digest(aeskey, aeskey_s))
+
+        # retrieve the key again using v1
+        aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy())
+        self.assertTrue(compare_digest(aeskey_g, aeskey_s))
+
+        # Incrementing the counter monotonically works again
+        replay_counter = 2
+        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
+                                replay_counter.to_bytes(4, byteorder='little',
+                                                        signed=False))
+        self.assertTrue(compare_digest(aeskey, aeskey_s))
+
+        # Incrementing the counter monotonically works even in case of network
+        # errors where some request is missed
+        replay_counter = 4
+        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
+                                replay_counter.to_bytes(4, byteorder='little',
+                                                        signed=False))
+        self.assertTrue(compare_digest(aeskey, aeskey_s))
+
+        bad_secret = self.new_pin_secret()
+        for i in range(3):
+            # exaust pin attmempts with good replay_counter
+            aeskey = self.get_pin(priv_key, bad_secret, self.new_entropy())
+            self.assertFalse(compare_digest(aeskey, aeskey_s))
+
+        # retrieve the key again using v1 should fail
+        aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy())
+        self.assertFalse(compare_digest(aeskey_g, aeskey_s))
+
+        # Incrementing the counter monotonically also fails
+        replay_counter = 5
+        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
+                                replay_counter.to_bytes(4, byteorder='little',
+                                                        signed=False))
+        self.assertFalse(compare_digest(aeskey, aeskey_s))
 
 
 if __name__ == '__main__':
