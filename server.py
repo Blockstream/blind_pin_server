@@ -3,7 +3,7 @@ from hmac import compare_digest
 import os
 from .lib import decrypt, encrypt, E_ECDH
 from wallycore import ec_private_key_verify, ec_sig_from_bytes, sha256, \
-    hmac_sha256, EC_FLAG_ECDSA
+    hmac_sha256, EC_FLAG_ECDSA, ec_private_key_bip341_tweak, ec_public_key_from_private_key
 
 
 class PINServerECDH(E_ECDH):
@@ -84,6 +84,47 @@ class PINServerECDH(E_ECDH):
 
         # Call the passed function with the decrypted payload
         response = func(cke, payload, self._get_aes_pin_data_key())
+
+        encrypted, hmac = self.encrypt_response_payload(response)
+        return encrypted, hmac
+
+
+class PINServerECDHv2(PINServerECDH):
+
+    @classmethod
+    def generate_ec_key_pair(cls, replay_counter, cke):
+        assert cls.STATIC_SERVER_PRIVATE_KEY
+
+        tweak = sha256(hmac_sha256(cke, replay_counter))
+        private_key = ec_private_key_bip341_tweak(cls.STATIC_SERVER_PRIVATE_KEY, tweak, 0)
+        ec_private_key_verify(private_key)
+        public_key = ec_public_key_from_private_key(private_key)
+        return private_key, public_key
+
+    def __init__(self, replay_counter, cke):
+        # intentionally we don't call any constructor from what we inherit from
+        assert len(replay_counter) == 4
+        self.replay_counter = replay_counter
+        self.private_key, self.public_key = self.generate_ec_key_pair(replay_counter, cke)
+
+    # Decrypt the received payload (ie. aes-key)
+    def decrypt_request_payload(self, cke, encrypted, hmac):
+        # Verify hmac received
+        hmac_calculated = hmac_sha256(self.request_hmac_key, cke + self.replay_counter + encrypted)
+        assert compare_digest(hmac, hmac_calculated)
+
+        # Return decrypted data
+        return decrypt(self.request_encryption_key, encrypted)
+
+    # Function to deal with wrapper ecdh encryption.
+    # Calls passed function with unwrapped payload, and wraps response before
+    # returning.  Separates payload handler func from wrapper encryption.
+    def call_with_payload(self, cke, encrypted, hmac, func):
+        self.generate_shared_secrets(cke)
+        payload = self.decrypt_request_payload(cke, encrypted, hmac)
+
+        # Call the passed function with the decrypted payload
+        response = func(cke, payload, self._get_aes_pin_data_key(), self.replay_counter)
 
         encrypted, hmac = self.encrypt_response_payload(response)
         return encrypted, hmac

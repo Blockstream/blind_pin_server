@@ -119,18 +119,85 @@ class PINDbTest(unittest.TestCase):
         self.assertEqual(new_key, key_in)
 
         # Read file back in - ensure fields the same
-        hps_out, key_out, count_out = PINDb._load_pin_fields(pinfile, user_id, aes_pin)
+        hps_out, key_out, count_out, replay_local = PINDb._load_pin_fields(pinfile,
+                                                                           user_id,
+                                                                           aes_pin)
         self.assertEqual(hps_out, hps_in)
         self.assertEqual(key_out, key_in)
         self.assertEqual(count_out, count_in)
+        self.assertEqual(replay_local, None)
 
         # Ensure we can set zero the count of an existing file
         count_in = 0
         new_key = PINDb._save_pin_fields(pinfile, hps_in, key_in, user_id, aes_pin, count_in)
-        hps_out, key_out, count_out = PINDb._load_pin_fields(pinfile, user_id, aes_pin)
+        hps_out, key_out, count_out, replay_local = PINDb._load_pin_fields(pinfile,
+                                                                           user_id,
+                                                                           aes_pin)
         self.assertEqual(hps_out, hps_in)
         self.assertEqual(key_out, key_in)
         self.assertEqual(count_out, count_in)
+        self.assertEqual(replay_local, None)
+
+        # Ensure we can't decrypt the pin with the wrong aes_key, hmac won't match
+        bad_aes = os.urandom(32)
+        with self.assertRaises(AssertionError) as _:
+            PINDb._load_pin_fields(pinfile, user_id, bad_aes)
+
+    def test_save_and_load_pin_fieldsv2(self):
+        # Reinitialise keys and secret
+        _, _, _, pinfile = self.new_keys()
+        pin_secret, key_in = self.new_pin_secret(), self.new_entropy()
+        hps_in = sha256(pin_secret)
+        count_in = 5
+
+        # Trying to read non-existent file throws (and does not create file)
+        self.assertFalse(PINDb.storage.exists(pinfile))
+        with self.assertRaises((FileNotFoundError, Exception)) as _:
+            PINDb._load_pin_fields(pinfile, None, None)
+        self.assertFalse(PINDb.storage.exists(pinfile))
+
+        user_id = os.urandom(32)
+        aes_pin = bytes(os.urandom(32))
+
+        replay_counter = 0
+        replay_counter = replay_counter.to_bytes(4, byteorder='little', signed=False)
+
+        # Save some data - check new file created
+        new_key = PINDb._save_pin_fields(pinfile, hps_in, key_in, user_id, aes_pin,
+                                         count_in, replay_counter)
+        self.assertTrue(PINDb.storage.exists(pinfile))
+
+        # Atm the 'new key' returned should be the one passed in
+        self.assertEqual(new_key, key_in)
+
+        replay_counter = 1
+        replay_counter = replay_counter.to_bytes(4, byteorder='little', signed=False)
+        # Read file back in - ensure fields the same
+        hps_out, key_out, count_out, replay_local = PINDb._load_pin_fields(pinfile,
+                                                                           user_id,
+                                                                           aes_pin,
+                                                                           replay_counter)
+        self.assertEqual(hps_out, hps_in)
+        self.assertEqual(key_out, key_in)
+        self.assertEqual(count_out, count_in)
+        self.assertEqual(replay_local, 0)
+
+        replay_counter = 5
+        replay_counter = replay_counter.to_bytes(4, byteorder='little', signed=False)
+
+        # Ensure we can set zero the count of an existing file
+        count_in = 0
+        new_key = PINDb._save_pin_fields(pinfile, hps_in, key_in, user_id, aes_pin,
+                                         count_in, replay_counter)
+        replay_counter = 10000
+        replay_counter = replay_counter.to_bytes(4, byteorder='little', signed=False)
+        hps_out, key_out, count_out, replay_local = PINDb._load_pin_fields(pinfile,
+                                                                           user_id,
+                                                                           aes_pin, replay_counter)
+        self.assertEqual(hps_out, hps_in)
+        self.assertEqual(key_out, key_in)
+        self.assertEqual(count_out, count_in)
+        self.assertEqual(replay_local, 5)
 
         # Ensure we can't decrypt the pin with the wrong aes_key, hmac won't match
         bad_aes = os.urandom(32)

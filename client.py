@@ -1,6 +1,7 @@
 from .lib import E_ECDH, decrypt, encrypt
 from hmac import compare_digest
-from wallycore import ec_sig_verify, sha256, hmac_sha256, EC_FLAG_ECDSA
+from wallycore import ec_sig_verify, sha256, hmac_sha256, EC_FLAG_ECDSA, \
+                      ec_public_key_bip341_tweak
 
 
 class PINClientECDH(E_ECDH):
@@ -45,3 +46,24 @@ class PINClientECDH(E_ECDH):
 
         # Return decrypted data
         return decrypt(self.response_encryption_key, encrypted)
+
+
+class PINClientECDHv2(PINClientECDH):
+
+    def __init__(self, static_server_public_key, replay_counter):
+        super().__init__(static_server_public_key)
+        self.replay_counter = replay_counter
+        tweak = sha256(hmac_sha256(self.public_key, self.replay_counter))
+
+        # Derive and store the ecdh server public key (ske)
+        self.ecdh_server_public_key = ec_public_key_bip341_tweak(
+                self.static_server_public_key, tweak, 0)
+
+        # Cache the shared secrets
+        self.generate_shared_secrets(self.ecdh_server_public_key)
+
+    # Encrypt/sign/hmac the payload (ie. the pin secret)
+    def encrypt_request_payload(self, payload):
+        encrypted = encrypt(self.request_encryption_key, payload)
+        hmac = hmac_sha256(self.request_hmac_key, self.public_key + self.replay_counter + encrypted)
+        return encrypted, hmac
