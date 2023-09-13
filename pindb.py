@@ -159,13 +159,11 @@ class PINDb(object):
         # verify integrity of encrypted data first
         pin_auth_key = hmac_sha256(aes_pin_data_key, pin_pubkey_hash)
         version_bytes = struct.pack('B', VERSION_LATEST)
-        len_plaintext = 32 + 32 + 1
-        if version_bytes == version:
-            # database has been upgraded with replay protection for v2 protocol
-            len_plaintext += 4
-        else:
+        len_plaintext = 32 + 32 + 1 + 4
+        if version_bytes != version:
             # this is the old database, check if we are upgrading
             version_bytes = struct.pack('B', VERSION_SUPPORTED)
+            len_plaintext -= 4
             assert version_bytes == version
         hmac_payload = hmac_sha256(pin_auth_key, version_bytes + encrypted)
 
@@ -180,7 +178,7 @@ class PINDb(object):
         count = struct.unpack('B', plaintext[64: 64 + struct.calcsize('B')])[0]
 
         replay_local = None
-        if len_plaintext >= 69:
+        if len_plaintext == 69:
             replay_local = plaintext[65:69]
             replay_local = int.from_bytes(replay_local, byteorder='little',
                                           signed=False)
