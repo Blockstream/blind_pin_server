@@ -221,7 +221,7 @@ class PINDb(object):
             if counter != 0 or replay_counter:
                 cls._save_pin_fields(pin_pubkey_hash, saved_hps, saved_key,
                                      pin_pubkey, aes_pin_data_key, 0,
-                                     replay_counter if replay_counter else replay_local)
+                                     replay_counter or replay_local)
 
             # return the saved key
             return saved_key
@@ -245,7 +245,7 @@ class PINDb(object):
             # increment counter
             cls._save_pin_fields(pin_pubkey_hash, saved_hps, saved_key, pin_pubkey,
                                  aes_pin_data_key, counter + 1,
-                                 replay_counter if replay_counter else replay_local)
+                                 replay_counter or replay_local)
             raise Exception("Invalid PIN")
 
     # Get existing aes_key given pin fields, or junk if pin or pubkey bad
