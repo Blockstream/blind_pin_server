@@ -180,7 +180,7 @@ class PINDb(object):
         count = struct.unpack('B', plaintext[64: 64 + struct.calcsize('B')])[0]
 
         replay_local = None
-        if len_plaintext > 65:
+        if len_plaintext >= 69:
             replay_local = plaintext[65:69]
             replay_local = int.from_bytes(replay_local, byteorder='little',
                                           signed=False)
