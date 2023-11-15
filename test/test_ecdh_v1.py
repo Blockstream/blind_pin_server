@@ -2,27 +2,28 @@ import unittest
 
 import os
 
-from ..client import PINClientECDH
-from ..server import PINServerECDH
+from ..client import PINClientECDHv1
+from ..server import PINServerECDHv1
 
 
 # Tests ECDHv1 wrapper without any reference to the pin/aes-key paylod stuff.
 # Just testing the ECDH envelope/encryption in isolation, with misc bytearray()
 # payloads (ie. any old str.encode()).  Tests client/server handshake/pairing.
-# NOTE: protocol v1: key-exchange handshake required
+# NOTE: protocol v1:
+# Explicit 'hmac' fields, separate derived keys, and key-exchange handshake
 class ECDHv1Test(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        PINServerECDH.load_private_key()
+        PINServerECDHv1.load_private_key()
 
         # The server public key the client would know
-        with open(PINServerECDH.STATIC_SERVER_PUBLIC_KEY_FILE, 'rb') as f:
+        with open(PINServerECDHv1.STATIC_SERVER_PUBLIC_KEY_FILE, 'rb') as f:
             cls.static_server_public_key = f.read()
 
     # Make a new client and initialise with server handshake
     def new_client_handshake(self, ske, sig):
-        client = PINClientECDH(self.static_server_public_key)
+        client = PINClientECDHv1(self.static_server_public_key)
         client.handshake(ske, sig)
         ske1, cke = client.get_key_exchange()
         self.assertEqual(ske, ske1)
@@ -32,7 +33,7 @@ class ECDHv1Test(unittest.TestCase):
 
         # A new server is created, which signs its newly-created ske with the
         # static key (so the client can validate that the ske is genuine).
-        server = PINServerECDH()
+        server = PINServerECDHv1()
         ske, sig = server.get_signed_public_key()
 
         # They get sent to the client (eg. over network) which then validates
@@ -71,7 +72,7 @@ class ECDHv1Test(unittest.TestCase):
 
     def test_call_with_payload(self):
         # A new server and client
-        server = PINServerECDH()
+        server = PINServerECDHv1()
         ske, sig = server.get_signed_public_key()
         cke, client = self.new_client_handshake(ske, sig)
 
@@ -98,7 +99,7 @@ class ECDHv1Test(unittest.TestCase):
 
     def test_multiple_calls(self):
         # A new server and client
-        server = PINServerECDH()
+        server = PINServerECDHv1()
         ske, sig = server.get_signed_public_key()
         cke, client = self.new_client_handshake(ske, sig)
 
@@ -120,7 +121,7 @@ class ECDHv1Test(unittest.TestCase):
 
     def test_multiple_clients(self):
         # A new server and several clients
-        server = PINServerECDH()
+        server = PINServerECDHv1()
         ske, sig = server.get_signed_public_key()
 
         # Server can persist and handle multiple calls provided each one is
@@ -143,7 +144,7 @@ class ECDHv1Test(unittest.TestCase):
 
     def test_bad_request_cke_throws(self):
         # A new server and client
-        server = PINServerECDH()
+        server = PINServerECDHv1()
         ske, sig = server.get_signed_public_key()
         cke, client = self.new_client_handshake(ske, sig)
 
@@ -173,7 +174,7 @@ class ECDHv1Test(unittest.TestCase):
 
     def test_bad_request_hmac_throws(self):
         # A new server and client
-        server = PINServerECDH()
+        server = PINServerECDHv1()
         ske, sig = server.get_signed_public_key()
         cke, client = self.new_client_handshake(ske, sig)
 
@@ -200,7 +201,7 @@ class ECDHv1Test(unittest.TestCase):
 
     def test_bad_response_hmac_throws(self):
         # A new server and client
-        server = PINServerECDH()
+        server = PINServerECDHv1()
         ske, sig = server.get_signed_public_key()
         cke, client = self.new_client_handshake(ske, sig)
 

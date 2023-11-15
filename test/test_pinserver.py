@@ -7,7 +7,7 @@ from multiprocessing import Process
 from hmac import compare_digest
 import requests
 
-from ..client import PINClientECDH, PINClientECDH, PINClientECDHv2
+from ..client import PINClientECDH, PINClientECDHv1, PINClientECDHv2
 from ..server import PINServerECDH
 from ..pindb import PINDb
 
@@ -97,14 +97,14 @@ class PINServerTest(unittest.TestCase):
 
     # Start the client/server key-exchange handshake
     def start_handshake_v1(self, client):
-        assert isinstance(client, PINClientECDH)
+        assert isinstance(client, PINClientECDHv1)
         handshake = self.post('start_handshake')
         client.handshake(bytes.fromhex(handshake['ske']), bytes.fromhex(handshake['sig']))
         return client
 
     # Make a new ephemeral client and initialise with server handshake
     def new_client_v1(self):
-        client = PINClientECDH(self.static_server_public_key)
+        client = PINClientECDHv1(self.static_server_public_key)
         return self.start_handshake_v1(client)
 
     def new_client_v2(self, reset_replay_counter=False):
@@ -120,7 +120,7 @@ class PINServerTest(unittest.TestCase):
     # NOTE: explicit hmac fields
     def server_call_v1(self, private_key, client, endpoint, pin_secret, entropy,
                        fn_perturb_request=None):
-        assert isinstance(client, PINClientECDH)
+        assert isinstance(client, PINClientECDHv1)
 
         # Make and encrypt the payload (ie. pin secret)
         ske, cke = client.get_key_exchange()
@@ -151,6 +151,7 @@ class PINServerTest(unittest.TestCase):
 
     # Make the server call to get/set the pin - returns the decrypted response
     # NOTE: signature covers replay counter
+    # NOTE: implicit hmac
     def server_call_v2(self, private_key, client, endpoint, pin_secret, entropy,
                        fn_perturb_request=None):
         assert isinstance(client, PINClientECDHv2)
@@ -162,14 +163,13 @@ class PINServerTest(unittest.TestCase):
                                 EC_FLAG_ECDSA | EC_FLAG_RECOVERABLE)
         payload = pin_secret + entropy + sig
 
-        encrypted, hmac = client.encrypt_request_payload(payload)
+        encrypted = client.encrypt_request_payload(payload)
 
         # Make call and parse response
-        # Includes 'replay_counter' but not 'ske'
+        # Includes 'replay_counter' but not 'ske' or 'hmac'
         urldata = {'cke': cke.hex(),
-                   'replay_counter': client.replay_counter.hex(),
                    'encrypted_data': encrypted.hex(),
-                   'hmac_encrypted_data': hmac.hex()}
+                   'replay_counter': client.replay_counter.hex()}
 
         # Caller can mangle data before it is sent
         if fn_perturb_request:
@@ -177,10 +177,9 @@ class PINServerTest(unittest.TestCase):
 
         response = self.post(endpoint, urldata)
         encrypted = bytes.fromhex(response['encrypted_key'])
-        hmac = bytes.fromhex(response['hmac'])
 
         # Return decrypted payload
-        return client.decrypt_response_payload(encrypted, hmac)
+        return client.decrypt_response_payload(encrypted)
 
     def make_server_call(self, private_key, endpoint, pin_secret, entropy, use_v2_protocol,
                          fn_perturb_request=None):
@@ -425,13 +424,14 @@ class PINServerTest(unittest.TestCase):
         request_manglers = [_set('cke', bad_cke.hex())]
         request_manglers.extend(f('cke') for f in [_short, _long, _remove])
         request_manglers.extend(f('encrypted_data') for f in [_random, _short, _long, _remove])
-        request_manglers.extend(f('hmac_encrypted_data') for f in [_random, _short, _long, _remove])
 
         if use_v2_protocol:
             request_manglers.extend(f('replay_counter') for f in [_random, _short, _long, _remove])
         else:
             request_manglers.append(_set('ske', bad_ske.hex()))
             request_manglers.extend(f('ske') for f in [_short, _long, _remove])
+            request_manglers.extend(f('hmac_encrypted_data')
+                                    for f in [_random, _short, _long, _remove])
 
         for mangler in request_manglers:
             for endpoint in ['get_pin', 'set_pin']:

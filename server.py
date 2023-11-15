@@ -58,6 +58,13 @@ class PINServerECDH(E_ECDH):
         super().__init__()
         self.time_started = int(time.time())
 
+
+# NOTE: protocol v1:
+# Explicit 'hmac' fields, separate derived keys, and key-exchange handshake
+class PINServerECDHv1(PINServerECDH):
+    def __init__(self):
+        super().__init__()
+
     def get_signed_public_key(self):
         return self.public_key, self._sign_with_static_key(self.public_key)
 
@@ -89,6 +96,8 @@ class PINServerECDH(E_ECDH):
         return encrypted, hmac
 
 
+# NOTE: protocol v2:
+# 'hmac' fields and derived keys implicit, and no key-exchange handshake required
 class PINServerECDHv2(PINServerECDH):
 
     @classmethod
@@ -107,24 +116,16 @@ class PINServerECDHv2(PINServerECDH):
         self.replay_counter = replay_counter
         self.private_key, self.public_key = self.generate_ec_key_pair(replay_counter, cke)
 
-    # Decrypt the received payload (ie. aes-key)
-    def decrypt_request_payload(self, cke, encrypted, hmac):
-        # Verify hmac received
-        hmac_calculated = hmac_sha256(self.request_hmac_key, cke + self.replay_counter + encrypted)
-        assert compare_digest(hmac, hmac_calculated)
+    def decrypt_request_payload(self, cke, encrypted):
+        return self.decrypt_with_ecdh(cke, self.LABEL_ORACLE_REQUEST, encrypted)
 
-        # Return decrypted data
-        return decrypt(self.request_encryption_key, encrypted)
+    def encrypt_response_payload(self, cke, payload):
+        return self.encrypt_with_ecdh(cke, self.LABEL_ORACLE_RESPONSE, payload)
 
     # Function to deal with wrapper ecdh encryption.
     # Calls passed function with unwrapped payload, and wraps response before
     # returning.  Separates payload handler func from wrapper encryption.
-    def call_with_payload(self, cke, encrypted, hmac, func):
-        self.generate_shared_secrets(cke)
-        payload = self.decrypt_request_payload(cke, encrypted, hmac)
-
-        # Call the passed function with the decrypted payload
+    def call_with_payload(self, cke, encrypted, func):
+        payload = self.decrypt_request_payload(cke, encrypted)
         response = func(cke, payload, self._get_aes_pin_data_key(), self.replay_counter)
-
-        encrypted, hmac = self.encrypt_response_payload(response)
-        return encrypted, hmac
+        return self.encrypt_response_payload(cke, response)
