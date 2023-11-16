@@ -122,6 +122,15 @@ class PINDb(object):
         return pin_secret, entropy, client_public_key
 
     @classmethod
+    def _check_v2_anti_replay(cls, server_counter, client_counter):
+        # if this is v2 and the db is already upgraded we enforce the anti replay
+        # ie. monotonic forward counter
+        if server_counter is not None and client_counter is not None:
+            server_counter = int.from_bytes(server_counter, byteorder='little', signed=False)
+            client_counter = int.from_bytes(client_counter, byteorder='little', signed=False)
+            assert client_counter > server_counter
+
+    @classmethod
     def _save_pin_fields(cls, pin_pubkey_hash, hash_pin_secret, aes_key,
                          pin_pubkey, aes_pin_data_key, count, replay_counter=None):
 
@@ -147,7 +156,7 @@ class PINDb(object):
         return aes_key
 
     @classmethod
-    def _load_pin_fields(cls, pin_pubkey_hash, pin_pubkey, aes_pin_data_key, replay_counter=None):
+    def _load_pin_fields(cls, pin_pubkey_hash, pin_pubkey, aes_pin_data_key):
 
         data = cls.storage.get(pin_pubkey_hash)
         assert len(data) == 129
@@ -173,23 +182,12 @@ class PINDb(object):
 
         hash_pin_secret, aes_key = plaintext[:32], plaintext[32:64]
         count = struct.unpack('B', plaintext[64: 64 + struct.calcsize('B')])[0]
+        replay_counter_persisted = plaintext[65:69] if len_plaintext == 69 else None
 
-        replay_local = None
-        if len_plaintext == 69:
-            replay_local = plaintext[65:69]
-            replay_local = int.from_bytes(replay_local, byteorder='little',
-                                          signed=False)
-        if replay_local is not None and replay_counter is not None:
-            # if this is v2 and the db is already upgraded we enforce the
-            # anti replay
-            replay_remote = int.from_bytes(replay_counter, byteorder='little',
-                                           signed=False)
-            assert replay_remote > replay_local
-
-        return hash_pin_secret, aes_key, count, replay_local
+        return hash_pin_secret, aes_key, count, replay_counter_persisted
 
     @classmethod
-    def make_client_aes_key(self, pin_secret, saved_key):
+    def make_client_aes_key(cls, pin_secret, saved_key):
         # The client key returned is a combination of the aes-key persisted
         # and the raw pin_secret (that we do not persist anywhere).
         aes_key = hmac_sha256(saved_key, pin_secret)
@@ -203,10 +201,9 @@ class PINDb(object):
         pin_pubkey_hash = bytes(sha256(pin_pubkey))
         saved_hps, saved_key, counter, replay_local = cls._load_pin_fields(pin_pubkey_hash,
                                                                            pin_pubkey,
-                                                                           aes_pin_data_key,
-                                                                           replay_counter)
-        if replay_local is not None:
-            replay_local = replay_local.to_bytes(4, byteorder='little', signed=False)
+                                                                           aes_pin_data_key)
+        # Check anti-replay counter if appropriate
+        cls._check_v2_anti_replay(replay_local, replay_counter)
 
         # Check that the pin provided matches that saved
         hash_pin_secret = sha256(pin_secret)

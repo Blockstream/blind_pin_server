@@ -134,7 +134,6 @@ class PINDbTest(unittest.TestCase):
         aes_pin = bytes(os.urandom(32))
 
         # Save some data - check new file created
-        v2_prior_counter = None
         v2_replay_counter = b'\x00\x00\x00\x00' if use_v2_protocol else None
         new_key = PINDb._save_pin_fields(pinfile, hps_in, key_in, user_id, aes_pin,
                                          count_in, v2_replay_counter)
@@ -144,13 +143,11 @@ class PINDbTest(unittest.TestCase):
         self.assertEqual(new_key, key_in)
 
         # Read file back in - ensure fields the same
-        if use_v2_protocol:
-            v2_prior_counter = int.from_bytes(v2_replay_counter, byteorder='little', signed=False)
-            v2_replay_counter = b'\x01\x00\x00\x00'
+        v2_prior_counter = v2_replay_counter
+        v2_replay_counter = b'\x01\x00\x00\x00' if use_v2_protocol else None
         hps_out, key_out, count_out, replay_local = PINDb._load_pin_fields(pinfile,
                                                                            user_id,
-                                                                           aes_pin,
-                                                                           v2_replay_counter)
+                                                                           aes_pin)
         self.assertEqual(hps_out, hps_in)
         self.assertEqual(key_out, key_in)
         self.assertEqual(count_out, count_in)
@@ -158,19 +155,16 @@ class PINDbTest(unittest.TestCase):
 
         # Ensure we can set zero the count of an existing file
         count_in = 0
-        if use_v2_protocol:
-            v2_prior_counter = int.from_bytes(v2_replay_counter, byteorder='little', signed=False)
-            v2_replay_counter = b'\x05\x00\x00\x00'
+        v2_prior_counter = v2_replay_counter
+        v2_replay_counter = b'\x05\x00\x00\x00' if use_v2_protocol else None
         new_key = PINDb._save_pin_fields(pinfile, hps_in, key_in, user_id, aes_pin,
                                          count_in, v2_replay_counter)
 
-        if use_v2_protocol:
-            v2_prior_counter = int.from_bytes(v2_replay_counter, byteorder='little', signed=False)
-            v2_replay_counter = b'\xc2\x00\x00\x00'
+        v2_prior_counter = v2_replay_counter
+        v2_replay_counter = b'\xc2\x00\x00\x00' if use_v2_protocol else None
         hps_out, key_out, count_out, replay_local = PINDb._load_pin_fields(pinfile,
                                                                            user_id,
-                                                                           aes_pin,
-                                                                           v2_replay_counter)
+                                                                           aes_pin)
         self.assertEqual(hps_out, hps_in)
         self.assertEqual(key_out, key_in)
         self.assertEqual(count_out, count_in)
