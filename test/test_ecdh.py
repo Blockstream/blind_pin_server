@@ -13,6 +13,8 @@ class ECDHTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        PINServerECDH.load_private_key()
+
         # The server public key the client would know
         with open(PINServerECDH.STATIC_SERVER_PUBLIC_KEY_FILE, 'rb') as f:
             cls.static_server_public_key = f.read()

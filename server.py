@@ -30,7 +30,7 @@ class PINServerECDH(E_ECDH):
         print(f'New public key written to file {cls.STATIC_SERVER_PUBLIC_KEY_FILE}')
 
     @classmethod
-    def _load_private_key(cls):
+    def load_private_key(cls):
         if not cls.STATIC_SERVER_PRIVATE_KEY:
             with open(cls.STATIC_SERVER_PRIVATE_KEY_FILE, 'rb') as f:
                 cls.STATIC_SERVER_PRIVATE_KEY = f.read()
@@ -38,7 +38,7 @@ class PINServerECDH(E_ECDH):
 
     @classmethod
     def _sign_with_static_key(cls, msg):
-        cls._load_private_key()
+        assert cls.STATIC_SERVER_PRIVATE_KEY
 
         hashed = sha256(msg)
         return ec_sig_from_bytes(cls.STATIC_SERVER_PRIVATE_KEY,
@@ -47,7 +47,8 @@ class PINServerECDH(E_ECDH):
 
     @classmethod
     def _get_aes_pin_data_key(cls):
-        cls._load_private_key()
+        assert cls.STATIC_SERVER_PRIVATE_KEY
+
         if not cls.STATIC_SERVER_AES_PIN_DATA:
             cls.STATIC_SERVER_AES_PIN_DATA = hmac_sha256(cls.STATIC_SERVER_PRIVATE_KEY, b'pin_data')
         return cls.STATIC_SERVER_AES_PIN_DATA

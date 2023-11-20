@@ -20,9 +20,9 @@ SESSION_LIFETIME = int(os.environ.get('SESSION_LIFETIME', 300))
 
 
 def flask_server():
-    if not os.path.exists(PINServerECDH.STATIC_SERVER_PRIVATE_KEY_FILE):
-        print(f'Key file not available, bailing out {PINServerECDH.STATIC_SERVER_PRIVATE_KEY_FILE}')
-        raise Exception
+    # Load, verify, and cache server static key at startup
+    # (Refuse to start if key non-existing or invalid)
+    PINServerECDH.load_private_key()
 
     sessions = {}
     app = Flask(__name__)
