@@ -7,7 +7,7 @@ from multiprocessing import Process
 from hmac import compare_digest
 import requests
 
-from ..client import PINClientECDH, PINClientECDHv2
+from ..client import PINClientECDH, PINClientECDH, PINClientECDHv2
 from ..server import PINServerECDH
 from ..pindb import PINDb
 
@@ -18,6 +18,8 @@ from wallycore import sha256, ec_sig_from_bytes, \
 
 
 class PINServerTest(unittest.TestCase):
+    # Protocol v2 client replay coutner
+    v2_client_counter = 13  # arbitrary initial value
 
     @staticmethod
     def new_pin_secret():
@@ -94,44 +96,52 @@ class PINServerTest(unittest.TestCase):
     # Helpers
 
     # Start the client/server key-exchange handshake
-    def start_handshake(self, client):
+    def start_handshake_v1(self, client):
+        assert isinstance(client, PINClientECDH)
         handshake = self.post('start_handshake')
         client.handshake(bytes.fromhex(handshake['ske']), bytes.fromhex(handshake['sig']))
         return client
 
     # Make a new ephemeral client and initialise with server handshake
-    def new_client_handshake(self):
+    def new_client_v1(self):
         client = PINClientECDH(self.static_server_public_key)
-        return self.start_handshake(client)
+        return self.start_handshake_v1(client)
 
-    # Make a new ephemeral client and initialise with tweaked server key
-    def new_client_handshakev2(self, replay_counter):
-        client = PINClientECDHv2(self.static_server_public_key, replay_counter)
-        return client
+    def new_client_v2(self, reset_replay_counter):
+        if reset_replay_counter:
+            client_counter = b'\x00\x00\x00\x00'
+        else:
+            self.v2_client_counter += 1  # increment - may be unnecessary but ensures monotonic
+            client_counter = self.v2_client_counter.to_bytes(4, byteorder='little', signed=False)
+
+        return PINClientECDHv2(self.static_server_public_key, client_counter)
 
     # Make the server call to get/set the pin - returns the decrypted response
-    def server_call(self, private_key, client, endpoint, pin_secret, entropy, replay_counter=None):
+    # NOTE: explicit hmac fields
+    def server_call_v1(self, private_key, client, endpoint, pin_secret, entropy,
+                       fn_perturb_request=None):
+        assert isinstance(client, PINClientECDH)
+
         # Make and encrypt the payload (ie. pin secret)
         ske, cke = client.get_key_exchange()
-        cke_sha = cke
-        if replay_counter is not None:
-            assert len(replay_counter) == 4
-            cke_sha = cke + replay_counter
         sig = ec_sig_from_bytes(private_key,
-                                sha256(cke_sha + pin_secret + entropy),
+                                sha256(cke + pin_secret + entropy),
                                 EC_FLAG_ECDSA | EC_FLAG_RECOVERABLE)
         payload = pin_secret + entropy + sig
 
         encrypted, hmac = client.encrypt_request_payload(payload)
 
         # Make call and parse response
+        # Includes 'ske' and 'hmac', but no 'replay_counter'
         urldata = {'ske': ske.hex(),
                    'cke': cke.hex(),
                    'encrypted_data': encrypted.hex(),
                    'hmac_encrypted_data': hmac.hex()}
-        if replay_counter:
-            urldata['replay_counter'] = replay_counter.hex()
-            del urldata['ske']
+
+        # Caller can mangle data before it is sent
+        if fn_perturb_request:
+            urldata = fn_perturb_request(urldata)
+
         response = self.post(endpoint, urldata)
         encrypted = bytes.fromhex(response['encrypted_key'])
         hmac = bytes.fromhex(response['hmac'])
@@ -139,29 +149,57 @@ class PINServerTest(unittest.TestCase):
         # Return decrypted payload
         return client.decrypt_response_payload(encrypted, hmac)
 
-    def get_pin(self, private_key, pin_secret, entropy):
-        # Create new ephemeral client, initiate handshake, and make call
-        client = self.new_client_handshake()
-        return self.server_call(
-            private_key, client, 'get_pin', pin_secret, entropy)
+    # Make the server call to get/set the pin - returns the decrypted response
+    # NOTE: signature covers replay counter
+    def server_call_v2(self, private_key, client, endpoint, pin_secret, entropy,
+                       fn_perturb_request=None):
+        assert isinstance(client, PINClientECDHv2)
 
-    def set_pin(self, private_key, pin_secret, entropy):
-        # Create new ephemeral client, initiate handshake, and make call
-        client = self.new_client_handshake()
-        return self.server_call(
-            private_key, client, 'set_pin', pin_secret, entropy)
+        # Make and encrypt the payload (ie. pin secret)
+        ske, cke = client.get_key_exchange()
+        sig = ec_sig_from_bytes(private_key,
+                                sha256(cke + client.replay_counter + pin_secret + entropy),
+                                EC_FLAG_ECDSA | EC_FLAG_RECOVERABLE)
+        payload = pin_secret + entropy + sig
 
-    def get_pinv2(self, private_key, pin_secret, entropy, replay_counter):
-        # Create new ephemeral client, initiate handshake, and make call
-        client = self.new_client_handshakev2(replay_counter)
-        return self.server_call(
-            private_key, client, 'get_pin', pin_secret, entropy, replay_counter)
+        encrypted, hmac = client.encrypt_request_payload(payload)
 
-    def set_pinv2(self, private_key, pin_secret, entropy, replay_counter):
-        # Create new ephemeral client, initiate handshake, and make call
-        client = self.new_client_handshakev2(replay_counter)
-        return self.server_call(
-            private_key, client, 'set_pin', pin_secret, entropy, replay_counter)
+        # Make call and parse response
+        # Includes 'replay_counter' but not 'ske'
+        urldata = {'cke': cke.hex(),
+                   'replay_counter': client.replay_counter.hex(),
+                   'encrypted_data': encrypted.hex(),
+                   'hmac_encrypted_data': hmac.hex()}
+
+        # Caller can mangle data before it is sent
+        if fn_perturb_request:
+            urldata = fn_perturb_request(urldata)
+
+        response = self.post(endpoint, urldata)
+        encrypted = bytes.fromhex(response['encrypted_key'])
+        hmac = bytes.fromhex(response['hmac'])
+
+        # Return decrypted payload
+        return client.decrypt_response_payload(encrypted, hmac)
+
+    def make_server_call(self, private_key, endpoint, pin_secret, entropy, use_v2_protocol,
+                         fn_perturb_request=None):
+        if use_v2_protocol:
+            # NOTE: replay_counter must be reset to 0x00 with 'set_pin' requests
+            reset_counter = endpoint == 'set_pin'
+            client = self.new_client_v2(reset_counter)
+            server_call = self.server_call_v2
+        else:
+            client = self.new_client_v1()
+            server_call = self.server_call_v1
+
+        return server_call(private_key, client, endpoint, pin_secret, entropy, fn_perturb_request)
+
+    def get_pin(self, private_key, pin_secret, entropy, use_v2_protocol):
+        return self.make_server_call(private_key, 'get_pin', pin_secret, entropy, use_v2_protocol)
+
+    def set_pin(self, private_key, pin_secret, entropy, use_v2_protocol):
+        return self.make_server_call(private_key, 'set_pin', pin_secret, entropy, use_v2_protocol)
 
     # Tests
     def test_get_index(self):
@@ -183,7 +221,7 @@ class PINServerTest(unittest.TestCase):
         f = requests.post(self.pinserver_url)
         self.assertEqual(f.status_code, 405)
 
-    def test_set_and_get_pin(self):
+    def _test_set_and_get_pin_impl(self, use_v2_protocol):
         # Make ourselves a static key pair for this logical client
         priv_key, _, _ = self.new_static_client_keys()
 
@@ -191,15 +229,48 @@ class PINServerTest(unittest.TestCase):
         pin_secret = self.new_pin_secret()
 
         # Make a new client and set the pin secret to get a new aes key
-        aeskey_s = self.set_pin(priv_key, pin_secret, self.new_entropy())
+        aeskey_s = self.set_pin(priv_key, pin_secret, self.new_entropy(), use_v2_protocol)
         self.assertEqual(len(aeskey_s), AES_KEY_LEN_256)
 
         # Get key with a new client, with the correct pin secret (new entropy)
-        for attempt in range(5):
-            aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy())
+        for attempt in range(3):
+            aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy(), use_v2_protocol)
             self.assertTrue(compare_digest(aeskey_g, aeskey_s))
 
-    def test_bad_guesses_clears_pin(self):
+    def test_set_and_get_pin(self):
+        for use_v2_protocol in [False, True]:
+            with self.subTest(protocol='v2' if use_v2_protocol else 'v1'):
+                self._test_set_and_get_pin_impl(use_v2_protocol)
+
+    def _test_protocol_upgrade_downgrade_impl(self, v2set, v2get):
+        # Make ourselves a static key pair for this logical client
+        priv_key, _, _ = self.new_static_client_keys()
+
+        # The 'correct' client pin
+        pin_secret = self.new_pin_secret()
+
+        # Make a new client and set the pin secret to get a new aes key
+        aeskey_s = self.set_pin(priv_key, pin_secret, self.new_entropy(), v2set)
+        self.assertEqual(len(aeskey_s), AES_KEY_LEN_256)
+
+        # Now client changes protocol version - should all work seamlessly
+        # upgrade, and downgrade ...
+        # Get key with a new client, with the correct pin secret (new entropy)
+        aeskey = self.get_pin(priv_key, pin_secret, self.new_entropy(), v2get)
+        self.assertTrue(compare_digest(aeskey, aeskey_s))
+
+        aeskey = self.get_pin(priv_key, pin_secret, self.new_entropy(), not v2get)
+        self.assertTrue(compare_digest(aeskey, aeskey_s))
+
+        aeskey = self.get_pin(priv_key, pin_secret, self.new_entropy(), v2get)
+        self.assertTrue(compare_digest(aeskey, aeskey_s))
+
+    def test_protocol_upgrade_downgrade(self):
+        for v2set, v2get in [(False, False), (False, True), (True, False), (True, True)]:
+            with self.subTest(set='v2' if v2set else 'v1', get='v2' if v2get else 'v1'):
+                self._test_protocol_upgrade_downgrade_impl(v2set, v2get)
+
+    def _test_bad_guesses_clears_pin_impl(self, use_v2_protocol):
         # Make ourselves a static key pair for this logical client
         priv_key, _, pinfile = self.new_static_client_keys()
 
@@ -208,9 +279,9 @@ class PINServerTest(unittest.TestCase):
 
         # Set and verify the pin - ensure underlying file created
         self.assertFalse(PINDb.storage.exists(pinfile))
-        aeskey_s = self.set_pin(priv_key, pin_secret, entropy)
+        aeskey_s = self.set_pin(priv_key, pin_secret, entropy, use_v2_protocol)
         self.assertEqual(len(aeskey_s), AES_KEY_LEN_256)
-        aeskey_g = self.get_pin(priv_key, pin_secret, entropy)
+        aeskey_g = self.get_pin(priv_key, pin_secret, entropy, use_v2_protocol)
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))
         self.assertTrue(PINDb.storage.exists(pinfile))
 
@@ -218,7 +289,7 @@ class PINServerTest(unittest.TestCase):
         for attempt in range(3):
             # Attempt to get with bad pin
             bad_secret = os.urandom(32)
-            guesskey = self.get_pin(priv_key, bad_secret, entropy)
+            guesskey = self.get_pin(priv_key, bad_secret, entropy, use_v2_protocol)
 
             # Wrong pin should return junk aes-key
             self.assertEqual(len(aeskey_s), len(guesskey))
@@ -228,12 +299,17 @@ class PINServerTest(unittest.TestCase):
         self.assertFalse(PINDb.storage.exists(pinfile))
 
         # Now even the correct pin will fail...
-        aeskey = self.get_pin(priv_key, bad_secret, entropy)
+        aeskey = self.get_pin(priv_key, bad_secret, entropy, use_v2_protocol)
         self.assertEqual(len(aeskey), len(aeskey_s))
         self.assertFalse(compare_digest(aeskey, aeskey_s))
         self.assertFalse(PINDb.storage.exists(pinfile))
 
-    def test_bad_pubkey_breaks(self):
+    def test_bad_guesses_clears_pin(self):
+        for use_v2_protocol in [False, True]:
+            with self.subTest(protocol='v2' if use_v2_protocol else 'v1'):
+                self._test_bad_guesses_clears_pin_impl(use_v2_protocol)
+
+    def _test_bad_pubkey_breaks_impl(self, use_v2_protocol):
         # Make ourselves a static key pair for this logical client
         priv_key, _, pinfile = self.new_static_client_keys()
 
@@ -242,9 +318,9 @@ class PINServerTest(unittest.TestCase):
 
         # Set and verify the pin - ensure underlying file created
         self.assertFalse(PINDb.storage.exists(pinfile))
-        aeskey_s = self.set_pin(priv_key, pin_secret, entropy)
+        aeskey_s = self.set_pin(priv_key, pin_secret, entropy, use_v2_protocol)
         self.assertEqual(len(aeskey_s), AES_KEY_LEN_256)
-        aeskey_g = self.get_pin(priv_key, pin_secret, entropy)
+        aeskey_g = self.get_pin(priv_key, pin_secret, entropy, use_v2_protocol)
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))
         self.assertTrue(PINDb.storage.exists(pinfile))
 
@@ -252,7 +328,7 @@ class PINServerTest(unittest.TestCase):
         for attempt in range(3):
             # Attempt to get with bad pub_key
             bad_key = os.urandom(32)
-            guesskey = self.get_pin(bad_key, pin_secret, entropy)
+            guesskey = self.get_pin(bad_key, pin_secret, entropy, use_v2_protocol)
 
             # Wrong pin should return junk aes-key
             self.assertEqual(len(aeskey_s), len(guesskey))
@@ -262,52 +338,117 @@ class PINServerTest(unittest.TestCase):
         self.assertTrue(PINDb.storage.exists(pinfile))
 
         # The correct pin will continue to work
-        aeskey = self.get_pin(priv_key, pin_secret, entropy)
+        aeskey = self.get_pin(priv_key, pin_secret, entropy, use_v2_protocol)
         self.assertEqual(len(aeskey), len(aeskey_s))
         self.assertTrue(compare_digest(aeskey, aeskey_s))
         self.assertTrue(PINDb.storage.exists(pinfile))
 
-    def test_two_users_with_same_pin(self):
+    def test_bad_pubkey_breaks(self):
+        for use_v2_protocol in [False, True]:
+            with self.subTest(protocol='v2' if use_v2_protocol else 'v1'):
+                self._test_bad_pubkey_breaks_impl(use_v2_protocol)
+
+    def _test_two_users_with_same_pin_impl(self, v2X, v2Y):
         # Two users
-        clientA_private_key, _, _ = self.new_static_client_keys()
-        clientB_private_key, _, _ = self.new_static_client_keys()
+        clientX_private_key, _, _ = self.new_static_client_keys()
+        clientY_private_key, _, _ = self.new_static_client_keys()
 
         # pin plus its salt/iv/entropy
         pin_secret, entropy = self.new_pin_secret(), self.new_entropy()
 
-        # A and B use the same values... bizarre but should be fine
-        aeskey_sA = self.set_pin(clientA_private_key, pin_secret, entropy)
-        aeskey_sB = self.set_pin(clientB_private_key, pin_secret, entropy)
-        self.assertFalse(compare_digest(aeskey_sA, aeskey_sB))
+        # X and Y use the same values... bizarre but should be fine
+        aeskey_sX = self.set_pin(clientX_private_key, pin_secret, entropy, v2X)
+        aeskey_sY = self.set_pin(clientY_private_key, pin_secret, entropy, v2Y)
+        self.assertFalse(compare_digest(aeskey_sX, aeskey_sY))
 
-        aeskey_gA = self.get_pin(clientA_private_key, pin_secret, entropy)
-        self.assertTrue(compare_digest(aeskey_gA, aeskey_sA))
+        aeskey_gX = self.get_pin(clientX_private_key, pin_secret, entropy, v2X)
+        self.assertTrue(compare_digest(aeskey_gX, aeskey_sX))
 
-        aeskey_gB = self.get_pin(clientB_private_key, pin_secret, entropy)
-        self.assertTrue(compare_digest(aeskey_gB, aeskey_sB))
+        aeskey_gY = self.get_pin(clientY_private_key, pin_secret, entropy, v2Y)
+        self.assertTrue(compare_digest(aeskey_gY, aeskey_sY))
 
-        self.assertFalse(compare_digest(aeskey_gA, aeskey_gB))
+        self.assertFalse(compare_digest(aeskey_gX, aeskey_gY))
 
-    def test_rejects_on_bad_json(self):
-        # Create new ephemeral client, initiate handshake, and make call
-        client = self.new_client_handshake()
-        ske, cke = client.get_key_exchange()
+    def test_two_users_with_same_pin(self):
+        for v2X, v2Y in [(False, False), (False, True), (True, True)]:
+            with self.subTest(X='v2' if v2X else 'v1', Y='v2' if v2Y else 'v1'):
+                self._test_two_users_with_same_pin_impl(v2X, v2Y)
 
-        # Make call with bad/missing parameters
-        urldata = {'ske': ske.hex(),
-                   'cke': cke.hex(),
-                   # 'encrypted_data' missing
-                   'hmac_encrypted_data': 'abc123'}
-
-        with self.assertRaises(ValueError) as cm:
-            self.post('get_pin', urldata)
-
+    def test_rejects_bad_payload_not_json(self):
         # Make call with not-even-json
         urldata = 'This is not even json'
+
+        with self.assertRaises(ValueError) as cm:
+            self.post('set_pin', urldata)
+        self.assertEqual('500', str(cm.exception.args[0]))
+
         with self.assertRaises(ValueError) as cm:
             self.post('get_pin', urldata)
+        self.assertEqual('500', str(cm.exception.args[0]))
 
-    def test_rejects_without_client_entropy(self):
+    def _test_rejects_on_bad_json_impl(self, use_v2_protocol):
+        # Make ourselves a static key pair for this logical client
+        priv_key, _, _ = self.new_static_client_keys()
+        pin_secret, entropy = self.new_pin_secret(), self.new_entropy()
+
+        # Various ways to mangle the json request payload
+        bad_ske, bad_cke = self.new_client_v1().get_key_exchange()
+
+        def _short(field):
+            def _fn(d):
+                d[field] = d[field][:-1]
+                return d
+            return _fn
+
+        def _long(field):
+            def _fn(d):
+                d[field] = d[field] + 'ff'
+                return d
+            return _fn
+
+        def _random(field):
+            def _fn(d):
+                d[field] = os.urandom(len(bytes.fromhex(d[field]))).hex()
+                return d
+            return _fn
+
+        def _set(field, value):
+            def _fn(d):
+                d[field] = value
+                return d
+            return _fn
+
+        def _remove(field):
+            def _fn(d):
+                del d[field]
+                return d
+            return _fn
+
+        request_manglers = [_set('cke', bad_cke.hex())]
+        request_manglers.extend(f('cke') for f in [_short, _long, _remove])
+        request_manglers.extend(f('encrypted_data') for f in [_random, _short, _long, _remove])
+        request_manglers.extend(f('hmac_encrypted_data') for f in [_random, _short, _long, _remove])
+
+        if use_v2_protocol:
+            request_manglers.extend(f('replay_counter') for f in [_random, _short, _long, _remove])
+        else:
+            request_manglers.append(_set('ske', bad_ske.hex()))
+            request_manglers.extend(f('ske') for f in [_short, _long, _remove])
+
+        for mangler in request_manglers:
+            for endpoint in ['get_pin', 'set_pin']:
+                with self.assertRaises(ValueError) as cm:
+                    self.make_server_call(priv_key, endpoint, pin_secret, self.new_entropy(),
+                                          use_v2_protocol, mangler)
+
+                self.assertEqual('500', str(cm.exception.args[0]))
+
+    def test_rejects_on_bad_json(self):
+        for use_v2_protocol in [False, True]:
+            with self.subTest(protocol='v2' if use_v2_protocol else 'v1'):
+                self._test_rejects_on_bad_json_impl(use_v2_protocol)
+
+    def _test_rejects_without_client_entropy_impl(self, use_v2_protocol):
         # Make ourselves a static key pair for this logical client
         priv_key, _, _ = self.new_static_client_keys()
 
@@ -316,16 +457,21 @@ class PINServerTest(unittest.TestCase):
 
         # Make a new client and set the pin secret to get a new aes key
         with self.assertRaises(ValueError) as cm:
-            self.set_pin(priv_key, pin_secret, entropy)
+            self.set_pin(priv_key, pin_secret, entropy, use_v2_protocol)
 
         self.assertEqual('500', str(cm.exception.args[0]))
 
         with self.assertRaises(ValueError) as cm:
-            self.get_pin(priv_key, pin_secret, entropy)
+            self.get_pin(priv_key, pin_secret, entropy, use_v2_protocol)
 
         self.assertEqual('500', str(cm.exception.args[0]))
 
-    def test_delayed_interaction(self):
+    def test_rejects_without_client_entropy(self):
+        for use_v2_protocol in [False, True]:
+            with self.subTest(protocol='v2' if use_v2_protocol else 'v1'):
+                self._test_rejects_without_client_entropy_impl(use_v2_protocol)
+
+    def test_delayed_interaction_v1(self):
         # Make ourselves a static key pair for this logical client
         priv_key, _, _ = self.new_static_client_keys()
 
@@ -333,21 +479,21 @@ class PINServerTest(unittest.TestCase):
         pin_secret = self.new_pin_secret()
 
         # Set and verify the pin
-        aeskey_s = self.set_pin(priv_key, pin_secret, self.new_entropy())
-        aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy())
+        aeskey_s = self.set_pin(priv_key, pin_secret, self.new_entropy(), use_v2_protocol=False)
+        aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy(), use_v2_protocol=False)
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))
 
         # If we delay in the server interaction it will fail with a 500 error
-        client = self.new_client_handshake()
+        client = self.new_client_v1()
         time.sleep(SESSION_LIFETIME + 1)  # Sufficiently long delay
 
         with self.assertRaises(ValueError) as cm:
-            self.server_call(priv_key, client, 'get_pin', pin_secret,
-                             self.new_entropy())
+            self.server_call_v1(priv_key, client, 'get_pin', pin_secret,
+                                self.new_entropy())
 
         self.assertEqual('500', str(cm.exception.args[0]))
 
-    def test_cannot_reuse_client_session(self):
+    def test_cannot_reuse_client_session_v1(self):
         # Make ourselves a static key pair for this logical client
         priv_key, _, _ = self.new_static_client_keys()
 
@@ -355,169 +501,88 @@ class PINServerTest(unittest.TestCase):
         pin_secret = self.new_pin_secret()
 
         # Set pin
-        aeskey_s = self.set_pin(priv_key, pin_secret, self.new_entropy())
+        aeskey_s = self.set_pin(priv_key, pin_secret, self.new_entropy(), use_v2_protocol=False)
 
         # Get/verify pin with a new client
-        client = self.new_client_handshake()
-        aeskey_g = self.server_call(priv_key, client, 'get_pin', pin_secret,
-                                    self.new_entropy())
+        client = self.new_client_v1()
+        aeskey_g = self.server_call_v1(priv_key, client, 'get_pin', pin_secret,
+                                       self.new_entropy())
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))
 
         # Trying to reuse the session should fail with a 500 error
+        # because the server has closed that ephemeral encryption session
         with self.assertRaises(ValueError) as cm:
-            self.server_call(priv_key, client, 'get_pin', pin_secret,
-                             self.new_entropy())
+            self.server_call_v1(priv_key, client, 'get_pin', pin_secret,
+                                self.new_entropy())
 
         self.assertEqual('500', str(cm.exception.args[0]))
 
         # Not great, but we could reuse the client if we re-initiate handshake
-        # (But that would use same cke which is not ideal.)
-        self.start_handshake(client)
-        aeskey = self.server_call(priv_key, client, 'get_pin', pin_secret,
-                                  self.new_entropy())
+        # (But that would use same cke which is not ideal/recommended.)
+        self.start_handshake_v1(client)
+        aeskey = self.server_call_v1(priv_key, client, 'get_pin', pin_secret,
+                                     self.new_entropy())
         self.assertTrue(compare_digest(aeskey, aeskey_s))
 
-    def test_v2_happypath_with_simulated_replay(self):
+    def test_cannot_reuse_client_session_v2(self):
         # Make ourselves a static key pair for this logical client
         priv_key, _, _ = self.new_static_client_keys()
 
-        # The 'correct' client pin
+        # The 'correct' client pin plus its salt/iv/entropy
         pin_secret = self.new_pin_secret()
 
-        # assert you can't set pin with a replay_counter different than 0
+        # Set pin
+        aeskey_s = self.set_pin(priv_key, pin_secret, self.new_entropy(), use_v2_protocol=True)
+
+        # Get/verify pin with a new client
+        client = self.new_client_v2(False)
+        aeskey_g = self.server_call_v2(priv_key, client, 'get_pin', pin_secret, self.new_entropy())
+        self.assertTrue(compare_digest(aeskey_g, aeskey_s))
+
+        # Trying to reuse the session should appear to work, but will return a junk key
+        # (ie. same as bad pin) because the server-side 'replay counter' has moved on
+        aeskey = self.server_call_v2(priv_key, client, 'get_pin', pin_secret, self.new_entropy())
+        self.assertFalse(compare_digest(aeskey, aeskey_s))
+
+        # Set-pin should fail more overtly
         with self.assertRaises(ValueError) as cm:
-            replay_counter = 1
-            self.set_pinv2(priv_key, pin_secret, self.new_entropy(),
-                           replay_counter.to_bytes(4,
-                                                   byteorder='little',
-                                                   signed=False))
+            aeskey_g = self.server_call_v2(priv_key, client, 'set_pin', self.new_pin_secret(),
+                                           self.new_entropy())
+        self.assertEqual('500', str(cm.exception.args[0]))
 
-        # set the pin secret to get a new aes key
-        replay_counter = 0
-        aeskey_s = self.set_pinv2(priv_key, pin_secret, self.new_entropy(),
-                                  replay_counter.to_bytes(4, byteorder='little',
-                                  signed=False))
-
-        # retrieve the key again with our correct pin secret
-        replay_counter = 1
-        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
-                                replay_counter.to_bytes(4, byteorder='little',
-                                signed=False))
-
-        # Now let's compare
-        self.assertTrue(compare_digest(aeskey, aeskey_s))
-
-        for i in range(5):
-            # Simulate a reply attempt failing N times, it doesn't affect pin
-            # attempts / dos
-            aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
-                                    replay_counter.to_bytes(4,
-                                                            byteorder='little',
-                                                            signed=False))
-            self.assertFalse(compare_digest(aeskey, aeskey_s))
-
-        # retrieve the key again using v1
-        aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy())
-        self.assertTrue(compare_digest(aeskey_g, aeskey_s))
-
-        # Incrementing the counter monotonically works again
-        replay_counter = 2
-        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
-                                replay_counter.to_bytes(4, byteorder='little',
-                                                        signed=False))
-        self.assertTrue(compare_digest(aeskey, aeskey_s))
-
-        # Incrementing the counter monotonically works even in case of network
-        # errors where some request is missed
-        replay_counter = 4
-        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
-                                replay_counter.to_bytes(4, byteorder='little',
-                                                        signed=False))
-        self.assertTrue(compare_digest(aeskey, aeskey_s))
-
-        bad_secret = self.new_pin_secret()
-        for i in range(3):
-            # exaust pin attmempts with good replay_counter
-            replay_counter = i + 5
-            replay_counter = replay_counter.to_bytes(4, byteorder='little', signed=False)
-            aeskey = self.get_pinv2(priv_key, bad_secret, self.new_entropy(), replay_counter)
-            self.assertFalse(compare_digest(aeskey, aeskey_s))
-
-        # retrieve the key again using v1 should fail
-        aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy())
-        self.assertFalse(compare_digest(aeskey_g, aeskey_s))
-
-        # Incrementing the counter monotonically also fails
-        replay_counter = 8
-        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
-                                replay_counter.to_bytes(4, byteorder='little',
-                                                        signed=False))
-        self.assertFalse(compare_digest(aeskey, aeskey_s))
-
-    def test_v2_happypath_with_simulated_replay_upgrade(self):
+    def test_set_pin_counter_v2(self):
         # Make ourselves a static key pair for this logical client
         priv_key, _, _ = self.new_static_client_keys()
 
-        # The 'correct' client pin
+        # The 'correct' client pin plus its salt/iv/entropy
         pin_secret = self.new_pin_secret()
 
-        # Make a new client and set the pin secret to get a new aes key
-        aeskey_s = self.set_pin(priv_key, pin_secret, self.new_entropy())
-        self.assertEqual(len(aeskey_s), AES_KEY_LEN_256)
+        # Set pin
+        aeskey_s = self.set_pin(priv_key, pin_secret, self.new_entropy(), use_v2_protocol=True)
 
-        # retrieve the key again with our correct pin secret
-        replay_counter = 0
-        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
-                                replay_counter.to_bytes(4, byteorder='little',
-                                signed=False))
-
-        # Now let's compare
-        self.assertTrue(compare_digest(aeskey, aeskey_s))
-
-        for i in range(5):
-            # Simulate a reply attempt failing N times, it doesn't affect pin
-            # attempts / dos
-            aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
-                                    replay_counter.to_bytes(4,
-                                                            byteorder='little',
-                                                            signed=False))
-            self.assertFalse(compare_digest(aeskey, aeskey_s))
-
-        # retrieve the key again using v1
-        aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy())
+        # Get/verify pin with a new client
+        aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy(), use_v2_protocol=True)
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))
 
-        # Incrementing the counter monotonically works again
-        replay_counter = 2
-        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
-                                replay_counter.to_bytes(4, byteorder='little',
-                                                        signed=False))
-        self.assertTrue(compare_digest(aeskey, aeskey_s))
+        # Trying to set-pin with non-zero counter should fail
+        client = self.new_client_v2(False)
+        with self.assertRaises(ValueError) as cm:
+            aeskey_g = self.server_call_v2(priv_key, client, 'set_pin', self.new_pin_secret(),
+                                           self.new_entropy())
+        self.assertEqual('500', str(cm.exception.args[0]))
 
-        # Incrementing the counter monotonically works even in case of network
-        # errors where some request is missed
-        replay_counter = 4
-        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
-                                replay_counter.to_bytes(4, byteorder='little',
-                                                        signed=False))
-        self.assertTrue(compare_digest(aeskey, aeskey_s))
+        # Existing saved PIN undamaged as set attempt failed
+        aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy(), use_v2_protocol=True)
+        self.assertTrue(compare_digest(aeskey_g, aeskey_s))
 
-        bad_secret = self.new_pin_secret()
-        for i in range(3):
-            # exaust pin attmempts with good replay_counter
-            aeskey = self.get_pin(priv_key, bad_secret, self.new_entropy())
-            self.assertFalse(compare_digest(aeskey, aeskey_s))
+        # Trying to reset pin with zero counter should work
+        pin_secret = self.new_pin_secret()
+        client = self.new_client_v2(True)
+        aeskey_s = self.server_call_v2(priv_key, client, 'set_pin', pin_secret, self.new_entropy())
+        self.assertFalse(compare_digest(aeskey_g, aeskey_s))  # changed
 
-        # retrieve the key again using v1 should fail
-        aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy())
-        self.assertFalse(compare_digest(aeskey_g, aeskey_s))
-
-        # Incrementing the counter monotonically also fails
-        replay_counter = 5
-        aeskey = self.get_pinv2(priv_key, pin_secret, self.new_entropy(),
-                                replay_counter.to_bytes(4, byteorder='little',
-                                                        signed=False))
-        self.assertFalse(compare_digest(aeskey, aeskey_s))
+        aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy(), use_v2_protocol=True)
+        self.assertTrue(compare_digest(aeskey_g, aeskey_s))
 
 
 if __name__ == '__main__':

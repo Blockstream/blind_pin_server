@@ -6,10 +6,11 @@ from ..client import PINClientECDH
 from ..server import PINServerECDH
 
 
-# Tests ECDH wrapper without any reference to the pin/aes-key paylod stuff.
-# Just testing the ECDH envelope/ecryption in isolation, with misc bytearray()
+# Tests ECDHv1 wrapper without any reference to the pin/aes-key paylod stuff.
+# Just testing the ECDH envelope/encryption in isolation, with misc bytearray()
 # payloads (ie. any old str.encode()).  Tests client/server handshake/pairing.
-class ECDHTest(unittest.TestCase):
+# NOTE: protocol v1: key-exchange handshake required
+class ECDHv1Test(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -81,7 +82,7 @@ class ECDHTest(unittest.TestCase):
 
         # Test server un-/re-wrapping function - this handles all the ecdh
         # decrypting, hmac checking and encrypting/hmac-ing of the response.
-        # Hander need know nothing about the wrapping encryption.
+        # Handler need know nothing about the wrapping encryption.
         server_response = "Reply to 'test 123' message".encode()
 
         def _func(client_key, payload, aes_pin_data_key):
@@ -102,6 +103,7 @@ class ECDHTest(unittest.TestCase):
         cke, client = self.new_client_handshake(ske, sig)
 
         # Server can handle multiple calls from the client with same secrets
+        # (But that would use same cke and secrets which is ofc not ideal/recommended.)
         server.generate_shared_secrets(cke)
         for i in range(5):
             client_request = 'request-{}'.format(i).encode()
@@ -123,7 +125,7 @@ class ECDHTest(unittest.TestCase):
 
         # Server can persist and handle multiple calls provided each one is
         # accompanied by its relevant cke for that client and the server
-        # regenerates the sharewd secrets each time.
+        # regenerates the shared secrets each time.
         for i in range(5):
             client_request = 'client-{}-request'.format(i).encode()
             cke, client = self.new_client_handshake(ske, sig)
@@ -138,6 +140,36 @@ class ECDHTest(unittest.TestCase):
 
             received = client.decrypt_response_payload(encrypted, hmac)
             self.assertEqual(received, server_response)
+
+    def test_bad_request_cke_throws(self):
+        # A new server and client
+        server = PINServerECDH()
+        ske, sig = server.get_signed_public_key()
+        cke, client = self.new_client_handshake(ske, sig)
+
+        # Encrypt message
+        client_request = 'bad-cke-request'.encode()
+        encrypted, hmac = client.encrypt_request_payload(client_request)
+
+        # Break cke
+        bad_cke, _ = self.new_client_handshake(ske, sig)
+        self.assertEqual(len(cke), len(bad_cke))
+        self.assertNotEqual(cke, bad_cke)
+
+        # Ensure decrypt_request() throws
+        server.generate_shared_secrets(cke)
+        server.decrypt_request_payload(cke, encrypted, hmac)  # no error
+
+        server.generate_shared_secrets(bad_cke)
+        with self.assertRaises(AssertionError) as cm:
+            server.decrypt_request_payload(bad_cke, encrypted, hmac)  # error
+
+        # Ensure call_with_payload() throws before it calls the handler fn
+        def _func(client_key, payload, aes_pin_data_key):
+            self.fail('should-never-get-here')
+
+        with self.assertRaises(AssertionError) as cm:
+            server.call_with_payload(bad_cke, encrypted, hmac, _func)
 
     def test_bad_request_hmac_throws(self):
         # A new server and client
@@ -164,7 +196,7 @@ class ECDHTest(unittest.TestCase):
             self.fail('should-never-get-here')
 
         with self.assertRaises(AssertionError) as cm:
-            server.call_with_payload(cke, encrypted, hmac, _func)
+            server.call_with_payload(cke, encrypted, bad_hmac, _func)
 
     def test_bad_response_hmac_throws(self):
         # A new server and client
@@ -173,7 +205,7 @@ class ECDHTest(unittest.TestCase):
         cke, client = self.new_client_handshake(ske, sig)
 
         # Encrypt message
-        client_request = 'bad-hmac-request'.encode()
+        client_request = 'bad-hmac-response-request'.encode()
         encrypted, hmac = client.encrypt_request_payload(client_request)
 
         def _func(client_key, payload, pin_data_aes_key):
