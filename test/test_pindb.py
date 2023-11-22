@@ -213,7 +213,7 @@ class PINDbTest(unittest.TestCase):
         pin_secret, entropy = self.new_pin_secret(), self.new_entropy()
 
         # Build the expected payload
-        v2_replay_counter = b'\x00\x00\x00\x00' if v2set else None
+        v2_replay_counter = b'\x05\x00\x00\x00' if v2set else None
         payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
 
         # Set and verify the the pin - check this creates the file
@@ -222,7 +222,7 @@ class PINDbTest(unittest.TestCase):
         aeskey_s = PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
         self.assertEqual(len(aeskey_s), AES_KEY_LEN_256)
 
-        v2_replay_counter = b'\x01\x00\x00\x00' if v2set else None
+        v2_replay_counter = b'\x06\x00\x00\x00' if v2set else None
         payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
         aeskey_g = PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))
@@ -263,7 +263,7 @@ class PINDbTest(unittest.TestCase):
         pin_aes_key = bytes(os.urandom(32))
 
         # Set and verify the the pin - check this creates the file
-        v2_replay_counter = b'\x00\x00\x00\x00' if use_v2_protocol else None
+        v2_replay_counter = b'\x04\x00\x00\x00' if use_v2_protocol else None
         payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
         self.assertFalse(PINDb.storage.exists(pinfile))
         aeskey_s = PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
@@ -271,7 +271,7 @@ class PINDbTest(unittest.TestCase):
         self.assertTrue(PINDb.storage.exists(pinfile))
 
         # Check we can get the key
-        v2_replay_counter = b'\x01\x00\x00\x00' if use_v2_protocol else None
+        v2_replay_counter = b'\x05\x00\x00\x00' if use_v2_protocol else None
         payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
         aeskey_g = PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))
@@ -413,26 +413,32 @@ class PINDbTest(unittest.TestCase):
         aeskey_g = PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))
 
-        # Set-pin fails if use a non-zero counter
-        v2_replay_counter = b'\x0f\x0f\x00\x00'
+        # Set-pin must also respect the counter
+        v2_replay_counter = b'\x05\x00\x00\x00'
         payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
         with self.assertRaises(AssertionError) as cm:
             aeskey_s = PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
 
-        # Key still present and readable with lower counter as set failed
+        v2_replay_counter = b'\x00\x00\x00\x00'
+        payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
+        with self.assertRaises(AssertionError) as cm:
+            aeskey_s = PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
+
+        # Key still present and readable as set failed
         v2_replay_counter = b'\x06\x00\x00\x00'
         payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
         aeskey_g = PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))
 
-        # Set-pin must use a counter of 0
-        v2_replay_counter = b'\x00\x00\x00\x00'
+        # Set-pin must use a higher counter
+        v2_replay_counter = b'\x07\x00\x00\x00'
         payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
         aeskey_s = PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
         self.assertEqual(len(aeskey_s), AES_KEY_LEN_256)
+        self.assertNotEqual(aeskey_s, aeskey_g)  # has changed
 
-        # Key readable with new counter
-        v2_replay_counter = b'\x01\x00\x00\x00'
+        # Key readable with ongoing counter
+        v2_replay_counter = b'\x08\x00\x00\x00'
         payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
         aeskey_g = PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))

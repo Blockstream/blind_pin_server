@@ -107,7 +107,7 @@ class PINServerTest(unittest.TestCase):
         client = PINClientECDH(self.static_server_public_key)
         return self.start_handshake_v1(client)
 
-    def new_client_v2(self, reset_replay_counter):
+    def new_client_v2(self, reset_replay_counter=False):
         if reset_replay_counter:
             client_counter = b'\x00\x00\x00\x00'
         else:
@@ -185,9 +185,7 @@ class PINServerTest(unittest.TestCase):
     def make_server_call(self, private_key, endpoint, pin_secret, entropy, use_v2_protocol,
                          fn_perturb_request=None):
         if use_v2_protocol:
-            # NOTE: replay_counter must be reset to 0x00 with 'set_pin' requests
-            reset_counter = endpoint == 'set_pin'
-            client = self.new_client_v2(reset_counter)
+            client = self.new_client_v2()
             server_call = self.server_call_v2
         else:
             client = self.new_client_v1()
@@ -561,11 +559,18 @@ class PINServerTest(unittest.TestCase):
         aeskey_s = self.set_pin(priv_key, pin_secret, self.new_entropy(), use_v2_protocol=True)
 
         # Get/verify pin with a new client
+        client = self.new_client_v2()
         aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy(), use_v2_protocol=True)
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))
 
-        # Trying to set-pin with non-zero counter should fail
-        client = self.new_client_v2(False)
+        # Trying to set-pin with same counter should fail
+        with self.assertRaises(ValueError) as cm:
+            aeskey_g = self.server_call_v2(priv_key, client, 'set_pin', self.new_pin_secret(),
+                                           self.new_entropy())
+        self.assertEqual('500', str(cm.exception.args[0]))
+
+        # Trying to set-pin with zero counter should fail
+        client = self.new_client_v2(True)
         with self.assertRaises(ValueError) as cm:
             aeskey_g = self.server_call_v2(priv_key, client, 'set_pin', self.new_pin_secret(),
                                            self.new_entropy())
@@ -575,9 +580,9 @@ class PINServerTest(unittest.TestCase):
         aeskey_g = self.get_pin(priv_key, pin_secret, self.new_entropy(), use_v2_protocol=True)
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))
 
-        # Trying to reset pin with zero counter should work
+        # Trying to set pin while respecting the counter should work
         pin_secret = self.new_pin_secret()
-        client = self.new_client_v2(True)
+        client = self.new_client_v2()
         aeskey_s = self.server_call_v2(priv_key, client, 'set_pin', pin_secret, self.new_entropy())
         self.assertFalse(compare_digest(aeskey_g, aeskey_s))  # changed
 

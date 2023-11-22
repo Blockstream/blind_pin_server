@@ -261,15 +261,24 @@ class PINDb(object):
     @classmethod
     def set_pin(cls, cke, payload, aes_pin_data_key, replay_counter=None):
         pin_secret, entropy, pin_pubkey = cls._extract_fields(cke, payload, replay_counter)
+        pin_pubkey_hash = bytes(sha256(pin_pubkey))
+
+        # Load any existing replay counter for the pubkey
+        # and if found check the anti-replay counter
+        replay_local = None
+        try:
+            _, _, _, replay_local = cls._load_pin_fields(pin_pubkey_hash, pin_pubkey,
+                                                         aes_pin_data_key)
+            cls._check_v2_anti_replay(replay_local, replay_counter)
+        except FileNotFoundError as e:
+            # No existing record for given pubkey - fine
+            pass
 
         # Make a new aes-key to persist from our and client entropy
         our_random = os.urandom(32)
         new_key = hmac_sha256(our_random, entropy)
 
-        assert replay_counter is None or replay_counter == b'\x00\x00\x00\x00'
-
         # Persist the pin fields
-        pin_pubkey_hash = bytes(sha256(pin_pubkey))
         hash_pin_secret = sha256(pin_secret)
         replay_bytes = None
         if replay_counter is not None:
