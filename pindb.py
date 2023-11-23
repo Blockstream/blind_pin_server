@@ -70,7 +70,8 @@ class RedisStorage(object):
     def get(cls, key):
         data = cls.redis_retry(lambda: red_conn.get(key))
         if not data:
-            raise Exception("No valid pin found")
+            # Raise error similar to filesystem backend
+            raise FileNotFoundError(2, "No record found", key.hex())
         return data
 
     @classmethod
