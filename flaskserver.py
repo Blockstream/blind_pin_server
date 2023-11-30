@@ -1,6 +1,7 @@
-import time
-import json
 import os
+import json
+import base64
+import time
 from flask import Flask, request, jsonify
 from .server import PINServerECDH, PINServerECDHv1, PINServerECDHv2
 from .pindb import PINDb
@@ -51,7 +52,7 @@ def flask_server():
         return jsonify({'ske': ske,
                         'sig': sig.hex()})
 
-    # NOTE: explicit 'hmac' fields in protocol v1
+    # NOTE: explicit fields in protocol v1
     def _complete_server_call_v1(pin_func, udata):
         ske = udata['ske']
         assert 'replay_counter' not in udata
@@ -79,29 +80,32 @@ def flask_server():
         return jsonify({'encrypted_key': encrypted_key.hex(),
                         'hmac': hmac.hex()})
 
-    # NOTE: 'hmac' data is appened to encrypted_data in protocol v2
+    # NOTE: v2 is one concatentated field, ascii85-encoded
     def _complete_server_call_v2(pin_func, udata):
-        assert 'ske' not in udata
-        assert len(udata['replay_counter']) == 8
-        cke = bytes.fromhex(udata['cke'])
-        replay_counter = bytes.fromhex(udata['replay_counter'])
+        assert 'data' in udata
+        data = base64.a85decode(udata['data'].encode())
+        assert len(data) > 37  # cke and counter and some encrypted payload
+
+        cke = data[:33]
+        replay_counter = data[33:37]
+        encrypted_data = data[37:]
         e_ecdh_server = PINServerECDHv2(replay_counter, cke)
         encrypted_key = e_ecdh_server.call_with_payload(
                 cke,
-                bytes.fromhex(udata['encrypted_data']),
+                encrypted_data,
                 pin_func)
 
         # Expecting to return an encrypted aes-key with hmac appended
         assert len(encrypted_key) == AES_KEY_LEN_256 + (2*AES_BLOCK_LEN) + HMAC_SHA256_LEN
 
         # Return response
-        return jsonify({'encrypted_key': encrypted_key.hex()})
+        return jsonify({'data': base64.a85encode(encrypted_key).decode()})
 
     def _complete_server_call(pin_func):
         try:
             # Get request data
             udata = json.loads(request.data)
-            if 'replay_counter' in udata:
+            if 'data' in udata:
                 return _complete_server_call_v2(pin_func, udata)
             return _complete_server_call_v1(pin_func, udata)
 
