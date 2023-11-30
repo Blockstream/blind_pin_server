@@ -6,12 +6,8 @@ from .lib import decrypt, encrypt
 from pathlib import Path
 from hmac import compare_digest
 from wallycore import ec_sig_to_public_key, sha256, hmac_sha256, \
-    hex_from_bytes, AES_KEY_LEN_256, EC_SIGNATURE_RECOVERABLE_LEN, SHA256_LEN, \
-    hex_to_bytes
+    AES_KEY_LEN_256, EC_SIGNATURE_RECOVERABLE_LEN, SHA256_LEN
 from dotenv import load_dotenv
-
-b2h = hex_from_bytes
-h2b = hex_to_bytes
 
 VERSION_SUPPORTED = 0
 VERSION_LATEST = 1
@@ -31,7 +27,7 @@ class FileStorage(object):
 
     @staticmethod
     def _get_filename(key):
-        filename = '{}.pin'.format(b2h(key))
+        filename = '{}.pin'.format(key.hex())
         if os.path.exists('pins'):
             return Path('pins') / filename
         return filename

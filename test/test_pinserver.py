@@ -13,11 +13,8 @@ from ..pindb import PINDb
 
 from ..flaskserver import app
 from ..flaskserver import SESSION_LIFETIME
-from wallycore import sha256, ec_sig_from_bytes, hex_from_bytes, hex_to_bytes,\
+from wallycore import sha256, ec_sig_from_bytes, \
     AES_KEY_LEN_256, EC_FLAG_ECDSA, EC_FLAG_RECOVERABLE
-
-b2h = hex_from_bytes
-h2b = hex_to_bytes
 
 
 class PINServerTest(unittest.TestCase):
@@ -99,7 +96,7 @@ class PINServerTest(unittest.TestCase):
     # Start the client/server key-exchange handshake
     def start_handshake(self, client):
         handshake = self.post('start_handshake')
-        client.handshake(h2b(handshake['ske']), h2b(handshake['sig']))
+        client.handshake(bytes.fromhex(handshake['ske']), bytes.fromhex(handshake['sig']))
         return client
 
     # Make a new ephemeral client and initialise with server handshake
@@ -128,16 +125,16 @@ class PINServerTest(unittest.TestCase):
         encrypted, hmac = client.encrypt_request_payload(payload)
 
         # Make call and parse response
-        urldata = {'ske': b2h(ske),
-                   'cke': b2h(cke),
-                   'encrypted_data': b2h(encrypted),
-                   'hmac_encrypted_data': b2h(hmac)}
+        urldata = {'ske': ske.hex(),
+                   'cke': cke.hex(),
+                   'encrypted_data': encrypted.hex(),
+                   'hmac_encrypted_data': hmac.hex()}
         if replay_counter:
-            urldata['replay_counter'] = b2h(replay_counter)
+            urldata['replay_counter'] = replay_counter.hex()
             del urldata['ske']
         response = self.post(endpoint, urldata)
-        encrypted = h2b(response['encrypted_key'])
-        hmac = h2b(response['hmac'])
+        encrypted = bytes.fromhex(response['encrypted_key'])
+        hmac = bytes.fromhex(response['hmac'])
 
         # Return decrypted payload
         return client.decrypt_response_payload(encrypted, hmac)
@@ -297,8 +294,8 @@ class PINServerTest(unittest.TestCase):
         ske, cke = client.get_key_exchange()
 
         # Make call with bad/missing parameters
-        urldata = {'ske': b2h(ske),
-                   'cke': b2h(cke),
+        urldata = {'ske': ske.hex(),
+                   'cke': cke.hex(),
                    # 'encrypted_data' missing
                    'hmac_encrypted_data': 'abc123'}
 

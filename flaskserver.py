@@ -4,12 +4,8 @@ import os
 from flask import Flask, request, jsonify
 from .server import PINServerECDH, PINServerECDHv2
 from .pindb import PINDb
-from wallycore import hex_from_bytes, hex_to_bytes, AES_KEY_LEN_256, \
-    AES_BLOCK_LEN
+from wallycore import AES_KEY_LEN_256, AES_BLOCK_LEN
 from dotenv import load_dotenv
-
-b2h = hex_from_bytes
-h2b = hex_to_bytes
 
 # Time we will retain active sessions, in seconds.
 # ie. maximum time allowed 'start_handshake' (which creates the session)
@@ -45,7 +41,7 @@ def flask_server():
         # Create a new ephemeral server/session and get its signed pubkey
         e_ecdh_server = PINServerECDH()
         pubkey, sig = e_ecdh_server.get_signed_public_key()
-        ske = b2h(pubkey)
+        ske = pubkey.hex()
 
         # Cache new session
         _cleanup_expired_sessions()
@@ -53,7 +49,7 @@ def flask_server():
 
         # Return response
         return jsonify({'ske': ske,
-                        'sig': b2h(sig)})
+                        'sig': sig.hex()})
 
     def _complete_server_call_v1(pin_func, udata):
         ske = udata['ske']
@@ -65,9 +61,9 @@ def flask_server():
 
         # get/set pin and get response data
         encrypted_key, hmac = e_ecdh_server.call_with_payload(
-                h2b(udata['cke']),
-                h2b(udata['encrypted_data']),
-                h2b(udata['hmac_encrypted_data']),
+                bytes.fromhex(udata['cke']),
+                bytes.fromhex(udata['encrypted_data']),
+                bytes.fromhex(udata['hmac_encrypted_data']),
                 pin_func)
 
         # Expecting to return an encrypted aes-key
@@ -78,27 +74,27 @@ def flask_server():
         _cleanup_expired_sessions()
 
         # Return response
-        return jsonify({'encrypted_key': b2h(encrypted_key),
-                        'hmac': b2h(hmac)})
+        return jsonify({'encrypted_key': encrypted_key.hex(),
+                        'hmac': hmac.hex()})
 
     def _complete_server_call_v2(pin_func, udata):
         assert 'ske' not in udata
         assert len(udata['replay_counter']) == 8
-        cke = h2b(udata['cke'])
-        replay_counter = h2b(udata['replay_counter'])
+        cke = bytes.fromhex(udata['cke'])
+        replay_counter = bytes.fromhex(udata['replay_counter'])
         e_ecdh_server = PINServerECDHv2(replay_counter, cke)
         encrypted_key, hmac = e_ecdh_server.call_with_payload(
                 cke,
-                h2b(udata['encrypted_data']),
-                h2b(udata['hmac_encrypted_data']),
+                bytes.fromhex(udata['encrypted_data']),
+                bytes.fromhex(udata['hmac_encrypted_data']),
                 pin_func)
 
         # Expecting to return an encrypted aes-key
         assert len(encrypted_key) == AES_KEY_LEN_256 + (2*AES_BLOCK_LEN)
 
         # Return response
-        return jsonify({'encrypted_key': b2h(encrypted_key),
-                        'hmac': b2h(hmac)})
+        return jsonify({'encrypted_key': encrypted_key.hex(),
+                        'hmac': hmac.hex()})
 
     def _complete_server_call(pin_func):
         try:

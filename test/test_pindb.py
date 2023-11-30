@@ -6,10 +6,8 @@ from hmac import compare_digest
 from ..pindb import PINDb
 from ..lib import encrypt, decrypt, E_ECDH
 
-from wallycore import sha256, ec_sig_from_bytes, hex_from_bytes, \
+from wallycore import sha256, ec_sig_from_bytes, \
     AES_KEY_LEN_256, EC_FLAG_ECDSA, EC_FLAG_RECOVERABLE
-
-b2h = hex_from_bytes
 
 
 # Tests the pindb and payload handling without any reference to the ecdh
