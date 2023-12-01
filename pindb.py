@@ -102,14 +102,19 @@ class PINDb(object):
 
     @classmethod
     def _extract_fields(cls, cke, data, replay_counter=None):
-        assert len(data) == (2*SHA256_LEN) + EC_SIGNATURE_RECOVERABLE_LEN
+        assert len(data) > SHA256_LEN
 
-        # secret + entropy + sig
+        # secret + (optional)entropy + sig
         pin_secret = data[:SHA256_LEN]
-        entropy = data[SHA256_LEN: SHA256_LEN + SHA256_LEN]
-        sig = data[SHA256_LEN + SHA256_LEN:]
+        if len(data) == SHA256_LEN + SHA256_LEN + EC_SIGNATURE_RECOVERABLE_LEN:
+            entropy = data[SHA256_LEN: SHA256_LEN + SHA256_LEN]
+            sig = data[SHA256_LEN + SHA256_LEN:]
+        else:
+            assert len(data) == SHA256_LEN + EC_SIGNATURE_RECOVERABLE_LEN
+            entropy = b''
+            sig = data[SHA256_LEN:]
 
-        # make sure the client_public_key signs over the replay counter too if provided
+        # The client_public_key also signs over any replay counter
         if replay_counter is not None:
             assert len(replay_counter) == 4
             signed_msg = sha256(cke + replay_counter + pin_secret + entropy)
@@ -243,6 +248,7 @@ class PINDb(object):
     # Get existing aes_key given pin fields, or junk if pin or pubkey bad
     @classmethod
     def get_aes_key(cls, cke, payload, aes_pin_data_key, replay_counter=None):
+        # NOTE: we don't care about client-passed entropy at this point
         pin_secret, _, pin_pubkey = cls._extract_fields(cke, payload, replay_counter)
 
         # Translate internal exception and bad-pin into junk key
@@ -260,8 +266,10 @@ class PINDb(object):
     # Set pin fields, return new aes_key
     @classmethod
     def set_pin(cls, cke, payload, aes_pin_data_key, replay_counter=None):
+        # NOTE: we require client-passed entropy at this point
         pin_secret, entropy, pin_pubkey = cls._extract_fields(cke, payload, replay_counter)
         pin_pubkey_hash = bytes(sha256(pin_pubkey))
+        assert entropy
 
         # Load any existing replay counter for the pubkey
         # and if found check the anti-replay counter

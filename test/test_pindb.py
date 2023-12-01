@@ -61,18 +61,21 @@ class PINDbTest(unittest.TestCase):
     def _test_extract_fields_impl(self, v2_replay_counter):
         # Reinitialise keys and secret and entropy
         privkey, pubkey, cke, _ = self.new_keys()
-        secret_in, entropy_in = self.new_pin_secret(), self.new_entropy()
+        secret_in = self.new_pin_secret()
 
-        # Build the expected payload
-        payload = self.make_payload(privkey, cke, secret_in, entropy_in, v2_replay_counter)
+        # NOTE: client entropy is optional
+        for entropy_in in [self.new_entropy(), b'']:
+            # Build the expected payload
+            payload = self.make_payload(privkey, cke, secret_in, entropy_in, v2_replay_counter)
 
-        # Check pindb function can extract the components from the payload
-        secret_out, entropy_out, pubkey_out = PINDb._extract_fields(cke, payload, v2_replay_counter)
-        self.assertEqual(secret_out, secret_in)
-        self.assertEqual(entropy_out, entropy_in)
+            # Check pindb function can extract the components from the payload
+            secret_out, entropy_out, pubkey_out = PINDb._extract_fields(cke, payload,
+                                                                        v2_replay_counter)
+            self.assertEqual(secret_out, secret_in)
+            self.assertEqual(entropy_out, entropy_in)
 
-        # Check the public key is correctly recovered from the signature
-        self.assertEqual(pubkey_out, pubkey)
+            # Check the public key is correctly recovered from the signature
+            self.assertEqual(pubkey_out, pubkey)
 
     def test_extract_fields(self):
         for v2_replay_counter in [None, os.urandom(4), os.urandom(4)]:
@@ -83,32 +86,37 @@ class PINDbTest(unittest.TestCase):
         # Get two sets of keys and a new secret
         privX, pubX, ckeX, _ = self.new_keys()
         privY, pubY, ckeY, _ = self.new_keys()
-        secret_in, entropy_in = self.new_pin_secret(), self.new_entropy()
+        secret_in = self.new_pin_secret()
 
-        # Build the expected payload
-        payload = self.make_payload(privX, ckeX, secret_in, entropy_in, v2_replay_counter)
+        # NOTE: client entropy is optional
+        for entropy_in in [self.new_entropy(), b'']:
+            # Build the expected payload
+            payload = self.make_payload(privX, ckeX, secret_in, entropy_in,
+                                        v2_replay_counter)
 
-        # Call the pindb function to extract the components from the payload
-        secret_out, entropy_out, pubkey = PINDb._extract_fields(ckeX, payload, v2_replay_counter)
-        self.assertEqual(secret_out, secret_in)
-        self.assertEqual(entropy_out, entropy_in)
-        self.assertEqual(pubkey, pubX)
+            # Call the pindb function to extract the components from the payload
+            secret_out, entropy_out, pubkey = PINDb._extract_fields(ckeX, payload,
+                                                                    v2_replay_counter)
+            self.assertEqual(secret_out, secret_in)
+            self.assertEqual(entropy_out, entropy_in)
+            self.assertEqual(pubkey, pubX)
 
-        # Call the pindb function to extract the components from the payload
-        # but use a mismatched cke - the sig should not yield either pubkey.
-        secret_out, entropy_out, pubkey = PINDb._extract_fields(ckeY, payload, v2_replay_counter)
-        self.assertEqual(secret_out, secret_in)
-        self.assertEqual(entropy_out, entropy_in)
-        self.assertNotEqual(pubkey, pubX)
-        self.assertNotEqual(pubkey, pubY)
-
-        # Call the pindb function again with the correct cke, but pass a bad replay counter
-        for bad_counter in [os.urandom(4), None if v2_replay_counter else os.urandom(4)]:
-            secret_out, entropy_out, pubkey = PINDb._extract_fields(ckeX, payload, bad_counter)
+            # Call the pindb function to extract the components from the payload
+            # but use a mismatched cke - the sig should not yield either pubkey.
+            secret_out, entropy_out, pubkey = PINDb._extract_fields(ckeY, payload,
+                                                                    v2_replay_counter)
             self.assertEqual(secret_out, secret_in)
             self.assertEqual(entropy_out, entropy_in)
             self.assertNotEqual(pubkey, pubX)
             self.assertNotEqual(pubkey, pubY)
+
+            # Call the pindb function again with the correct cke, but pass a bad replay counter
+            for bad_counter in [os.urandom(4), None if v2_replay_counter else os.urandom(4)]:
+                secret_out, entropy_out, pubkey = PINDb._extract_fields(ckeX, payload, bad_counter)
+                self.assertEqual(secret_out, secret_in)
+                self.assertEqual(entropy_out, entropy_in)
+                self.assertNotEqual(pubkey, pubX)
+                self.assertNotEqual(pubkey, pubY)
 
     def test_mismatching_sig(self):
         for v2_replay_counter in [None, os.urandom(4), os.urandom(4)]:
@@ -194,9 +202,9 @@ class PINDbTest(unittest.TestCase):
         self.assertEqual(len(aeskey_s), AES_KEY_LEN_256)
         self.assertTrue(PINDb.storage.exists(pinfile))
 
-        # Get the key with the pin - new payload has new entropy (same pin)
+        # Get the key with the pin - new payload has no entropy and higher replay_counter (same pin)
         v2_replay_counter = os.urandom(4) if v2get else None
-        payload = self.make_payload(privkey, cke, pin_secret, self.new_entropy(), v2_replay_counter)
+        payload = self.make_payload(privkey, cke, pin_secret, b'', v2_replay_counter)
         aeskey_g = PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))
         self.assertTrue(PINDb.storage.exists(pinfile))
@@ -222,6 +230,7 @@ class PINDbTest(unittest.TestCase):
         aeskey_s = PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
         self.assertEqual(len(aeskey_s), AES_KEY_LEN_256)
 
+        entropy = b''  # get does not need entropy
         v2_replay_counter = b'\x06\x00\x00\x00' if v2set else None
         payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
         aeskey_g = PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
@@ -271,6 +280,7 @@ class PINDbTest(unittest.TestCase):
         self.assertTrue(PINDb.storage.exists(pinfile))
 
         # Check we can get the key
+        entropy = b''  # get does not need entropy
         v2_replay_counter = b'\x05\x00\x00\x00' if use_v2_protocol else None
         payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
         aeskey_g = PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
@@ -320,6 +330,7 @@ class PINDbTest(unittest.TestCase):
         self.assertTrue(PINDb.storage.exists(pinfile))
 
         # Check we can get the key
+        entropy = b''  # get does not need entropy
         v2_replay_counter = b'\x03\x00\x00\x00' if use_v2_protocol else None
         payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
         aeskey_g = PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
@@ -370,6 +381,7 @@ class PINDbTest(unittest.TestCase):
 
         # Check we can get the key with increasing counters, and same or
         # decreasing counters give a 'bad pin' result
+        entropy = b''  # get does not need entropy
         max_counter = 0
         for counter in [0, 3, 3, 6, 123, 45, 332, 155, 332, 330, 500, 200, 300, 400, 501, 500]:
             v2_replay_counter = counter.to_bytes(4, 'little', signed=False)
@@ -464,6 +476,7 @@ class PINDbTest(unittest.TestCase):
         self.assertFalse(compare_digest(aeskeyX_s, aeskeyY_s))
 
         # Each can get their own key
+        entropy = b''  # get does not need entropy
         v2_replay_counterX = os.urandom(4) if v2X else None
         v2_replay_counterY = os.urandom(4) if v2Y else None
         payloadX = self.make_payload(privX, ckeX, secret_in, entropy_in, v2_replay_counterX)
@@ -479,28 +492,49 @@ class PINDbTest(unittest.TestCase):
             with self.subTest(X='v2' if v2X else 'v1', Y='v2' if v2Y else 'v1'):
                 self._test_two_users_with_same_pin_impl(v2X, v2Y)
 
-    def _test_rejects_without_client_entropy_impl(self, use_v2_protocol):
+    def _test_client_entropy_impl(self, use_v2_protocol):
         # Reinitialise keys and secret and entropy
         sig_priv, _, cke, pinfile = self.new_keys()
-        secret, entropy = self.new_pin_secret(), bytearray()
+        secret, entropy = self.new_pin_secret(), self.new_entropy()
+        pin_aes_key = bytes(os.urandom(32))
 
-        # Build the expected payload
+        # Build the expected payload with entropy and set a key
         v2_replay_counter = b'\x00\x00\x00\x00' if use_v2_protocol else None
         payload = self.make_payload(sig_priv, cke, secret, entropy, v2_replay_counter)
-
-        pin_aes_key = bytes(os.urandom(32))
-        with self.assertRaises(AssertionError) as cm:
-            PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
+        aeskey_s = PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
 
         v2_replay_counter = b'\x01\x00\x00\x00' if use_v2_protocol else None
         payload = self.make_payload(sig_priv, cke, secret, entropy, v2_replay_counter)
-        with self.assertRaises(AssertionError) as cm:
-            PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
+        aeskey_g = PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
+        assert aeskey_g == aeskey_s
 
-    def test_rejects_without_client_entropy(self):
+        # Payload without client entropy
+        v2_replay_counter = b'\x02\x00\x00\x00' if use_v2_protocol else None
+        payload = self.make_payload(sig_priv, cke, secret, b'', v2_replay_counter)
+
+        # Verify trying to set-pin without entropy fails
+        with self.assertRaises(AssertionError) as cm:
+            PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
+
+        # Get-pin should be fine without entropy
+        aeskey_g = PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
+        assert aeskey_g == aeskey_s
+
+        # Note: wrong-length entropy is always bad
+        v2_replay_counter = b'\x03\x00\x00\x00' if use_v2_protocol else None
+        for entropy in [self.new_entropy()[:-1], self.new_entropy() + b'\xab']:
+            payload = self.make_payload(sig_priv, cke, secret, entropy, v2_replay_counter)
+
+            with self.assertRaises(AssertionError) as cm:
+                PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
+
+            with self.assertRaises(AssertionError) as cm:
+                PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
+
+    def test_client_entropy(self):
         for use_v2_protocol in [False, True]:
             with self.subTest(protocol='v2' if use_v2_protocol else 'v1'):
-                self._test_rejects_without_client_entropy_impl(use_v2_protocol)
+                self._test_client_entropy_impl(use_v2_protocol)
 
 
 if __name__ == '__main__':
