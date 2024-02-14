@@ -80,10 +80,10 @@ def flask_server():
         return jsonify({'encrypted_key': encrypted_key.hex(),
                         'hmac': hmac.hex()})
 
-    # NOTE: v2 is one concatentated field, ascii85-encoded
+    # NOTE: v2 is one concatentated field, base64-encoded
     def _complete_server_call_v2(pin_func, udata):
         assert 'data' in udata
-        data = base64.a85decode(udata['data'].encode())
+        data = base64.b64decode(udata['data'].encode())
         assert len(data) > 37  # cke and counter and some encrypted payload
 
         cke = data[:33]
@@ -99,7 +99,7 @@ def flask_server():
         assert len(encrypted_key) == AES_KEY_LEN_256 + (2*AES_BLOCK_LEN) + HMAC_SHA256_LEN
 
         # Return response
-        return jsonify({'data': base64.a85encode(encrypted_key).decode()})
+        return jsonify({'data': base64.b64encode(encrypted_key).decode()})
 
     def _complete_server_call(pin_func):
         try:

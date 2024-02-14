@@ -153,7 +153,7 @@ class PINServerTest(unittest.TestCase):
     # Make the server call to get/set the pin - returns the decrypted response
     # NOTE: signature covers replay counter
     # NOTE: implicit hmac
-    # NOTE: all fields concatenated into one, and ascii85 encoded
+    # NOTE: all fields concatenated into one, and base64 encoded
     def server_call_v2(self, private_key, client, endpoint, pin_secret, entropy,
                        fn_perturb_request=None):
         assert isinstance(client, PINClientECDHv2)
@@ -179,16 +179,16 @@ class PINServerTest(unittest.TestCase):
         if fn_perturb_request:
             urldata = fn_perturb_request(urldata)
 
-        # v2 concatenates all the fields into one and uses ascii85-encoding
+        # v2 concatenates all the fields into one and uses base64-encoding
         cke = bytes.fromhex(urldata.get('cke', ''))
         replay_counter = bytes.fromhex(urldata.get('replay_counter', ''))
         encrypted = bytes.fromhex(urldata.get('encrypted_data', ''))
         payload = cke + replay_counter + encrypted
-        data = base64.a85encode(payload).decode()
+        data = base64.b64encode(payload).decode()
         urldata = {'data': data}
 
         response = self.post(endpoint, urldata)
-        encrypted = base64.a85decode(response['data'].encode())
+        encrypted = base64.b64decode(response['data'].encode())
 
         # Return decrypted payload
         return client.decrypt_response_payload(encrypted)
