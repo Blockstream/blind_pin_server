@@ -2,6 +2,7 @@ import time
 from hmac import compare_digest
 import os
 from .lib import decrypt, encrypt, E_ECDH
+from werkzeug.exceptions import BadRequest, SecurityError
 from wallycore import ec_private_key_verify, ec_sig_from_bytes, sha256, \
     hmac_sha256, EC_FLAG_ECDSA, ec_private_key_bip341_tweak, ec_public_key_from_private_key
 
@@ -72,7 +73,8 @@ class PINServerECDHv1(PINServerECDH):
     def decrypt_request_payload(self, cke, encrypted, hmac):
         # Verify hmac received
         hmac_calculated = hmac_sha256(self.request_hmac_key, cke + encrypted)
-        assert compare_digest(hmac, hmac_calculated)
+        if not compare_digest(hmac, hmac_calculated):
+            raise SecurityError()
 
         # Return decrypted data
         return decrypt(self.request_encryption_key, encrypted)
@@ -86,8 +88,11 @@ class PINServerECDHv1(PINServerECDH):
     # Calls passed function with unwrapped payload, and wraps response before
     # returning.  Separates payload handler func from wrapper encryption.
     def call_with_payload(self, cke, encrypted, hmac, func):
-        self.generate_shared_secrets(cke)
-        payload = self.decrypt_request_payload(cke, encrypted, hmac)
+        try:
+            self.generate_shared_secrets(cke)
+            payload = self.decrypt_request_payload(cke, encrypted, hmac)
+        except Exception as e:
+            raise BadRequest(e)
 
         # Call the passed function with the decrypted payload
         response = func(cke, payload, self._get_aes_pin_data_key())
@@ -126,6 +131,10 @@ class PINServerECDHv2(PINServerECDH):
     # Calls passed function with unwrapped payload, and wraps response before
     # returning.  Separates payload handler func from wrapper encryption.
     def call_with_payload(self, cke, encrypted, func):
-        payload = self.decrypt_request_payload(cke, encrypted)
+        try:
+            payload = self.decrypt_request_payload(cke, encrypted)
+        except Exception as e:
+            raise BadRequest(e)
+
         response = func(cke, payload, self._get_aes_pin_data_key(), self.replay_counter)
         return self.encrypt_response_payload(cke, response)

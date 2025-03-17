@@ -2,9 +2,11 @@ import os
 import json
 import base64
 import time
+import collections
 from flask import Flask, request, jsonify
 from .server import PINServerECDH, PINServerECDHv1, PINServerECDHv2
 from .pindb import PINDb
+from werkzeug.exceptions import BadRequest
 from wallycore import AES_KEY_LEN_256, AES_BLOCK_LEN, HMAC_SHA256_LEN
 from dotenv import load_dotenv
 
@@ -54,12 +56,17 @@ def flask_server():
 
     # NOTE: explicit fields in protocol v1
     def _complete_server_call_v1(pin_func, udata):
+        if udata.keys() != {'cke', 'ske', 'encrypted_data', 'hmac_encrypted_data'}:
+            raise BadRequest()
+
         ske = udata['ske']
-        assert 'replay_counter' not in udata
 
         # Get associated session (ensuring not stale)
         _cleanup_expired_sessions()
-        e_ecdh_server = sessions[ske]
+
+        e_ecdh_server = sessions.get(ske)
+        if not e_ecdh_server:
+            raise BadRequest()
 
         # get/set pin and get response data
         encrypted_key, hmac = e_ecdh_server.call_with_payload(
@@ -82,9 +89,14 @@ def flask_server():
 
     # NOTE: v2 is one concatentated field, base64-encoded
     def _complete_server_call_v2(pin_func, udata):
-        assert 'data' in udata
-        data = base64.b64decode(udata['data'].encode())
-        assert len(data) > 37  # cke and counter and some encrypted payload
+        if udata.keys() != {'data'}:
+            raise BadRequest()
+
+        try:
+            data = base64.b64decode(udata['data'].encode())
+            assert len(data) > 37  # cke and counter and some encrypted payload
+        except Exception as e:
+            raise BadRequest(e)
 
         cke = data[:33]
         replay_counter = data[33:37]
@@ -104,7 +116,12 @@ def flask_server():
     def _complete_server_call(pin_func):
         try:
             # Get request data
-            udata = json.loads(request.data)
+            try:
+                udata = json.loads(request.data)
+                assert isinstance(udata, collections.abc.Mapping)
+            except Exception as e:
+                raise BadRequest(e)
+
             if 'data' in udata:
                 return _complete_server_call_v2(pin_func, udata)
             return _complete_server_call_v1(pin_func, udata)

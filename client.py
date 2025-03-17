@@ -1,5 +1,6 @@
 from .lib import E_ECDH, decrypt, encrypt
 from hmac import compare_digest
+from werkzeug.exceptions import SecurityError
 from wallycore import ec_sig_verify, sha256, hmac_sha256, EC_FLAG_ECDSA, \
                       ec_public_key_bip341_tweak
 
@@ -46,7 +47,8 @@ class PINClientECDHv1(PINClientECDH):
 
         # Verify hmac received
         hmac_calculated = hmac_sha256(self.response_hmac_key, encrypted)
-        assert compare_digest(hmac, hmac_calculated)
+        if not compare_digest(hmac, hmac_calculated):
+            raise SecurityError()
 
         # Return decrypted data
         return decrypt(self.response_encryption_key, encrypted)
