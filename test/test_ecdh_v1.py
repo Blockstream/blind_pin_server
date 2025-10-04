@@ -1,6 +1,7 @@
 import unittest
 
 import os
+from werkzeug.exceptions import BadRequest
 
 from ..client import PINClientECDHv1
 from ..server import PINServerECDHv1
@@ -162,14 +163,14 @@ class ECDHv1Test(unittest.TestCase):
         server.decrypt_request_payload(cke, encrypted, hmac)  # no error
 
         server.generate_shared_secrets(bad_cke)
-        with self.assertRaises(AssertionError) as cm:
+        with self.assertRaises(BadRequest) as cm:
             server.decrypt_request_payload(bad_cke, encrypted, hmac)  # error
 
         # Ensure call_with_payload() throws before it calls the handler fn
         def _func(client_key, payload, aes_pin_data_key):
             self.fail('should-never-get-here')
 
-        with self.assertRaises(AssertionError) as cm:
+        with self.assertRaises(BadRequest) as cm:
             server.call_with_payload(bad_cke, encrypted, hmac, _func)
 
     def test_bad_request_hmac_throws(self):
@@ -189,14 +190,14 @@ class ECDHv1Test(unittest.TestCase):
         # Ensure decrypt_request() throws
         server.generate_shared_secrets(cke)
         server.decrypt_request_payload(cke, encrypted, hmac)  # no error
-        with self.assertRaises(AssertionError) as cm:
+        with self.assertRaises(BadRequest) as cm:
             server.decrypt_request_payload(cke, encrypted, bad_hmac)  # error
 
         # Ensure call_with_payload() throws before it calls the handler fn
         def _func(client_key, payload, aes_pin_data_key):
             self.fail('should-never-get-here')
 
-        with self.assertRaises(AssertionError) as cm:
+        with self.assertRaises(BadRequest) as cm:
             server.call_with_payload(cke, encrypted, bad_hmac, _func)
 
     def test_bad_response_hmac_throws(self):
@@ -221,7 +222,7 @@ class ECDHv1Test(unittest.TestCase):
         self.assertNotEqual(hmac, bad_hmac)
 
         client.decrypt_response_payload(encrypted, hmac)  # No error
-        with self.assertRaises(AssertionError) as cm:
+        with self.assertRaises(BadRequest) as cm:
             client.decrypt_response_payload(encrypted, bad_hmac)  # error
 
 

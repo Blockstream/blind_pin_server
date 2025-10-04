@@ -1,6 +1,7 @@
 import unittest
 
 import os
+from werkzeug.exceptions import BadRequest
 
 from ..client import PINClientECDHv2
 from ..server import PINServerECDHv2
@@ -134,7 +135,7 @@ class ECDHv2Test(unittest.TestCase):
         def _func(client_key, payload, aes_pin_data_key):
             self.fail('should-never-get-here')
 
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(BadRequest) as cm:
             server.call_with_payload(bad_cke, encrypted, _func)
 
     def test_bad_request_counter_throws(self):
@@ -159,7 +160,7 @@ class ECDHv2Test(unittest.TestCase):
         def _func(client_key, payload, aes_pin_data_key):
             self.fail('should-never-get-here')
 
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(BadRequest) as cm:
             server.call_with_payload(cke, encrypted, _func)
 
     def test_bad_request_hmac_throws(self):
@@ -186,7 +187,7 @@ class ECDHv2Test(unittest.TestCase):
         def _func(client_key, payload, aes_pin_data_key, replay_counter):
             self.fail('should-never-get-here')
 
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(BadRequest) as cm:
             server.call_with_payload(cke, bad_encrypted, _func)
 
     def test_bad_response_hmac_throws(self):
