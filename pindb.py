@@ -5,6 +5,7 @@ import redis
 from .lib import decrypt, encrypt
 from pathlib import Path
 from hmac import compare_digest
+from werkzeug.exceptions import BadRequest
 from wallycore import ec_sig_to_public_key, sha256, hmac_sha256, \
     AES_KEY_LEN_256, EC_SIGNATURE_RECOVERABLE_LEN, SHA256_LEN
 from dotenv import load_dotenv
@@ -102,17 +103,19 @@ class PINDb(object):
 
     @classmethod
     def _extract_fields(cls, cke, data, replay_counter=None):
-        assert len(data) > SHA256_LEN
+        if len(data) <= SHA256_LEN:
+            raise BadRequest()
 
         # secret + (optional)entropy + sig
         pin_secret = data[:SHA256_LEN]
         if len(data) == SHA256_LEN + SHA256_LEN + EC_SIGNATURE_RECOVERABLE_LEN:
             entropy = data[SHA256_LEN: SHA256_LEN + SHA256_LEN]
             sig = data[SHA256_LEN + SHA256_LEN:]
-        else:
-            assert len(data) == SHA256_LEN + EC_SIGNATURE_RECOVERABLE_LEN
+        elif len(data) == SHA256_LEN + EC_SIGNATURE_RECOVERABLE_LEN:
             entropy = b''
             sig = data[SHA256_LEN:]
+        else:
+            raise BadRequest()
 
         # The client_public_key also signs over any replay counter
         if replay_counter is not None:
@@ -133,7 +136,8 @@ class PINDb(object):
         if server_counter is not None and client_counter is not None:
             server_counter = int.from_bytes(server_counter, byteorder='little', signed=False)
             client_counter = int.from_bytes(client_counter, byteorder='little', signed=False)
-            assert client_counter > server_counter
+            if client_counter <= server_counter:
+                raise BadRequest()
 
     @classmethod
     def _save_pin_fields(cls, pin_pubkey_hash, hash_pin_secret, aes_key,
@@ -269,7 +273,8 @@ class PINDb(object):
         # NOTE: we require client-passed entropy at this point
         pin_secret, entropy, pin_pubkey = cls._extract_fields(cke, payload, replay_counter)
         pin_pubkey_hash = bytes(sha256(pin_pubkey))
-        assert entropy
+        if not entropy:
+            raise BadRequest()
 
         # Load any existing replay counter for the pubkey
         # and if found check the anti-replay counter
