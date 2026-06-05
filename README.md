@@ -20,7 +20,7 @@ Green.
 
 ## Build the docker image
 
-docker build -f Dockerfile . -t dockerized_pinserver
+`docker build -f Dockerfile . -t dockerized_pinserver`
 
 ## Prepare the directory for all the pins
 
