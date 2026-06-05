@@ -18,9 +18,11 @@ redis_host = os.environ.get('REDIS_HOST')
 redis_port = int(os.environ.get('REDIS_PORT', 6379))
 redis_health_check_interval = int(os.environ.get('REDIS_HEALTH_CHECK_INTERVAL', 25))
 redis_password = os.environ.get('REDIS_PASSWORD', None)
+# Retry connections for up to 1 minute
+redis_retry = redis.retry.Retry(redis.backoff.ConstantBackoff(1.0), retries=60)
 red_conn = redis.Redis(host=redis_host, port=redis_port, db=0, password=redis_password,
                        health_check_interval=redis_health_check_interval,
-                       retry_on_timeout=True)
+                       retry=redis_retry)
 
 
 class FileStorage(object):
