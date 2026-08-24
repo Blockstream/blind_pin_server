@@ -45,6 +45,7 @@ jobs:
     - name: Test with filesystem backend
       run: |
         cp test_keys/* ../
+        chmod 600 ../server_private_key.key
         cd ..
         python -m unittest -v
       env:
@@ -54,6 +55,7 @@ jobs:
     - name: Test with Redis backend
       run: |
         cp test_keys/* ../
+        chmod 600 ../server_private_key.key
         cd ..
         python -m unittest -v
       env:

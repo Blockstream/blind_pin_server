@@ -1,6 +1,8 @@
 import time
 from hmac import compare_digest
 import os
+import stat
+import sys
 from .lib import decrypt, encrypt, E_ECDH
 from wallycore import ec_private_key_verify, ec_sig_from_bytes, sha256, \
     hmac_sha256, EC_FLAG_ECDSA, ec_private_key_bip341_tweak, ec_public_key_from_private_key
@@ -20,7 +22,11 @@ class PINServerECDH(E_ECDH):
 
         private_key, public_key = cls.generate_ec_key_pair()
 
-        with open(cls.STATIC_SERVER_PRIVATE_KEY_FILE, 'wb') as f:
+        # O_EXCL: fail if it exists, S_IRUSR|S_IWUSR: chmod 600
+        fd = os.open(cls.STATIC_SERVER_PRIVATE_KEY_FILE,
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                     stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, 'wb') as f:
             f.write(private_key)
 
         with open(cls.STATIC_SERVER_PUBLIC_KEY_FILE, 'wb') as f:
@@ -32,6 +38,11 @@ class PINServerECDH(E_ECDH):
     @classmethod
     def load_private_key(cls):
         if not cls.STATIC_SERVER_PRIVATE_KEY:
+            mode = stat.S_IMODE(os.stat(cls.STATIC_SERVER_PRIVATE_KEY_FILE).st_mode)
+            if mode & (stat.S_IRWXG | stat.S_IRWXO):
+                print(f'WARNING: {cls.STATIC_SERVER_PRIVATE_KEY_FILE} is mode {mode:04o}, '
+                      'readable by other users', file=sys.stderr)
+
             with open(cls.STATIC_SERVER_PRIVATE_KEY_FILE, 'rb') as f:
                 cls.STATIC_SERVER_PRIVATE_KEY = f.read()
                 ec_private_key_verify(cls.STATIC_SERVER_PRIVATE_KEY)

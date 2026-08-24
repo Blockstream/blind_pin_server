@@ -18,6 +18,19 @@ Green.
 
 `PYTHONPATH=.. python -m blind_pin_server.generateserverkey`
 
+## Securing the server key
+
+Anyone who can read `server_private_key.key` can impersonate this server, so it is created
+mode `0600` and should stay that way.
+
+In the container it is read by `www-data`, uid 33:
+
+`sudo chown 33:33 server_private_key.key`
+
+`sudo chmod 400 server_private_key.key`
+
+Mount it read-only (`:ro`, as below) so the container can't alter it.
+
 ## Build the docker image
 
 `docker build -f Dockerfile . -t dockerized_pinserver`
@@ -28,4 +41,4 @@ Green.
 
 ## Run the docker image (requires the previous steps)
 
-`docker run -v $PWD/server_private_key.key:/server_private_key.key -v $PWD/pinsdir:/pins -p 8096:8096 dockerized_pinserver`
+`docker run -v $PWD/server_private_key.key:/server_private_key.key:ro -v $PWD/pinsdir:/pins -p 8096:8096 dockerized_pinserver`
