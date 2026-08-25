@@ -2,7 +2,6 @@ import time
 from hmac import compare_digest
 import os
 import stat
-import sys
 from .lib import decrypt, encrypt, E_ECDH
 from wallycore import ec_private_key_verify, ec_sig_from_bytes, sha256, \
     hmac_sha256, EC_FLAG_ECDSA, ec_private_key_bip341_tweak, ec_public_key_from_private_key
@@ -40,8 +39,8 @@ class PINServerECDH(E_ECDH):
         if not cls.STATIC_SERVER_PRIVATE_KEY:
             mode = stat.S_IMODE(os.stat(cls.STATIC_SERVER_PRIVATE_KEY_FILE).st_mode)
             if mode & (stat.S_IRWXG | stat.S_IRWXO):
-                print(f'WARNING: {cls.STATIC_SERVER_PRIVATE_KEY_FILE} is mode {mode:04o}, '
-                      'readable by other users', file=sys.stderr)
+                raise Exception(f'{cls.STATIC_SERVER_PRIVATE_KEY_FILE} is mode {mode:04o}, '
+                                'must not be readable by other users')
 
             with open(cls.STATIC_SERVER_PRIVATE_KEY_FILE, 'rb') as f:
                 cls.STATIC_SERVER_PRIVATE_KEY = f.read()

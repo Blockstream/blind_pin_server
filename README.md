@@ -21,13 +21,13 @@ Green.
 ## Securing the server key
 
 Anyone who can read `server_private_key.key` can impersonate this server, so it is created
-mode `0600` and should stay that way.
+mode `0600` and the server refuses to start if it is readable by anyone else.
 
-In the container it is read by `www-data`, uid 33:
+In the container it is read by `www-data`:
 
-`sudo chown 33:33 server_private_key.key`
+`sudo chown www-data:www-data server_private_key.key`
 
-`sudo chmod 400 server_private_key.key`
+`sudo chmod 600 server_private_key.key`
 
 Mount it read-only (`:ro`, as below) so the container can't alter it.
 
