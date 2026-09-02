@@ -2,6 +2,7 @@ import unittest
 
 import os
 from hmac import compare_digest
+from werkzeug.exceptions import BadRequest
 
 from ..pindb import PINDb
 from ..lib import E_ECDH
@@ -428,12 +429,12 @@ class PINDbTest(unittest.TestCase):
         # Set-pin must also respect the counter
         v2_replay_counter = b'\x05\x00\x00\x00'
         payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
-        with self.assertRaises(AssertionError) as cm:
+        with self.assertRaises(BadRequest) as cm:
             aeskey_s = PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
 
         v2_replay_counter = b'\x00\x00\x00\x00'
         payload = self.make_payload(privkey, cke, pin_secret, entropy, v2_replay_counter)
-        with self.assertRaises(AssertionError) as cm:
+        with self.assertRaises(BadRequest) as cm:
             aeskey_s = PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
 
         # Key still present and readable as set failed
@@ -513,7 +514,7 @@ class PINDbTest(unittest.TestCase):
         payload = self.make_payload(sig_priv, cke, secret, b'', v2_replay_counter)
 
         # Verify trying to set-pin without entropy fails
-        with self.assertRaises(AssertionError) as cm:
+        with self.assertRaises(BadRequest) as cm:
             PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
 
         # Get-pin should be fine without entropy
@@ -525,10 +526,10 @@ class PINDbTest(unittest.TestCase):
         for entropy in [self.new_entropy()[:-1], self.new_entropy() + b'\xab']:
             payload = self.make_payload(sig_priv, cke, secret, entropy, v2_replay_counter)
 
-            with self.assertRaises(AssertionError) as cm:
+            with self.assertRaises(BadRequest) as cm:
                 PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
 
-            with self.assertRaises(AssertionError) as cm:
+            with self.assertRaises(BadRequest) as cm:
                 PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
 
     def test_client_entropy(self):
