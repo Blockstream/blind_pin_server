@@ -2,7 +2,7 @@ import os
 import json
 import base64
 import time
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, abort
 from .server import PINServerECDH, PINServerECDHv1, PINServerECDHv2
 from .pindb import PINDb
 from wallycore import AES_KEY_LEN_256, AES_BLOCK_LEN, HMAC_SHA256_LEN
@@ -14,6 +14,9 @@ from dotenv import load_dotenv
 # Can be set in environment, defaults to 5mins
 load_dotenv()
 SESSION_LIFETIME = int(os.environ.get('SESSION_LIFETIME', 300))
+# Ceiling on v1 sessions held in memory.
+# Can be set in environment, defaults to 5000
+MAX_SESSIONS = int(os.environ.get('MAX_SESSIONS', 5000))
 
 
 def flask_server():
@@ -43,13 +46,17 @@ def flask_server():
     def start_handshake_route():
         app.logger.debug('Number of sessions {}'.format(len(sessions)))
 
+        # Reject before generating a key
+        _cleanup_expired_sessions()
+        if len(sessions) >= MAX_SESSIONS:
+            abort(503)
+
         # Create a new ephemeral server/session and get its signed pubkey
         e_ecdh_server = PINServerECDHv1()
         pubkey, sig = e_ecdh_server.get_signed_public_key()
         ske = pubkey.hex()
 
         # Cache new session
-        _cleanup_expired_sessions()
         sessions[ske] = e_ecdh_server
 
         # Return response
