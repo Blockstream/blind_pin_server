@@ -17,6 +17,10 @@ SESSION_LIFETIME = int(os.environ.get('SESSION_LIFETIME', 300))
 
 
 def flask_server():
+    # python -O silently strips assert statements, so refuse to run unchecked
+    if not __debug__:
+        raise Exception('Refusing to run with assertions disabled (python -O)')
+
     # Load, verify, and cache server static key at startup
     # (Refuse to start if key non-existing or invalid)
     PINServerECDH.load_private_key()
