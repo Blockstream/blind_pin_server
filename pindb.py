@@ -180,7 +180,7 @@ class PINDb(object):
             assert version_bytes == version
         hmac_payload = hmac_sha256(pin_auth_key, version_bytes + encrypted)
 
-        assert hmac_payload == hmac_received
+        assert compare_digest(hmac_payload, hmac_received)
 
         storage_aes_key = hmac_sha256(aes_pin_data_key, pin_pubkey)
         plaintext = decrypt(storage_aes_key, encrypted)
