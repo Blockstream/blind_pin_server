@@ -1,6 +1,7 @@
 import os
 import json
 import base64
+import logging
 import time
 from flask import Flask, request, jsonify, abort
 from .server import PINServerECDH, PINServerECDHv1, PINServerECDHv2
@@ -122,7 +123,8 @@ def flask_server():
 
         except Exception as e:
             app.logger.error("Error: {} {}".format(type(e), e))
-            app.logger.error("Request body: {}".format(request.data))
+            if app.logger.isEnabledFor(logging.DEBUG):
+                app.logger.debug("Request body: {}".format(request.data))
             raise e
 
     @app.route('/get_pin', methods=['POST'])
