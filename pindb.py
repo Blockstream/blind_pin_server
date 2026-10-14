@@ -25,6 +25,11 @@ red_conn = redis.Redis(host=redis_host, port=redis_port, db=0, password=redis_pa
                        retry=redis_retry)
 
 
+# Raised for a request payload which is not valid for the endpoint invoked
+class InvalidRequest(Exception):
+    pass
+
+
 class FileStorage(object):
 
     @staticmethod
@@ -250,8 +255,11 @@ class PINDb(object):
     # Get existing aes_key given pin fields, or junk if pin or pubkey bad
     @classmethod
     def get_aes_key(cls, cke, payload, aes_pin_data_key, replay_counter=None):
-        # NOTE: we don't care about client-passed entropy at this point
-        pin_secret, _, pin_pubkey = cls._extract_fields(cke, payload, replay_counter)
+        # NOTE: a v2 'get' payload never carries client entropy, while v1 clients
+        # use the same payload for 'get' and 'set', so ignore in that case
+        pin_secret, entropy, pin_pubkey = cls._extract_fields(cke, payload, replay_counter)
+        if entropy and replay_counter is not None:
+            raise InvalidRequest('Unexpected client entropy in get-pin payload')
 
         # Translate internal exception and bad-pin into junk key
         try:
