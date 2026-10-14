@@ -5,7 +5,7 @@ import logging
 import time
 from flask import Flask, request, jsonify, abort
 from .server import PINServerECDH, PINServerECDHv1, PINServerECDHv2
-from .pindb import PINDb
+from .pindb import PINDb, InvalidRequest
 from wallycore import AES_KEY_LEN_256, AES_BLOCK_LEN, HMAC_SHA256_LEN
 from dotenv import load_dotenv
 
@@ -120,6 +120,10 @@ def flask_server():
             if 'data' in udata:
                 return _complete_server_call_v2(pin_func, udata)
             return _complete_server_call_v1(pin_func, udata)
+
+        except InvalidRequest as e:
+            app.logger.error("Bad request: {}".format(e))
+            abort(400)
 
         except Exception as e:
             app.logger.error("Error: {} {}".format(type(e), e))
