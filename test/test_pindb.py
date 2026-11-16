@@ -488,11 +488,20 @@ class PINDbTest(unittest.TestCase):
         self.assertEqual(len(aeskey_s), AES_KEY_LEN_256)
         self.assertNotEqual(aeskey_s, aeskey_g)  # has changed
 
-        # Key readable with ongoing counter
+        # Set-pin counter is be persisted so can't be replayed
+        with self.assertRaises(AssertionError) as cm:
+            PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
+
+        # Key readable with incremented counter
         v2_replay_counter = b'\x08\x00\x00\x00'
         payload = self.make_payload(privkey, cke, pin_secret, b'', v2_replay_counter)
         aeskey_g = PINDb.get_aes_key(cke, payload, pin_aes_key, v2_replay_counter)
         self.assertTrue(compare_digest(aeskey_g, aeskey_s))
+
+        # A set-pin v1 request cannot be used to reset the counter
+        PINDb.set_pin(cke, self.make_payload(privkey, cke, pin_secret, entropy), pin_aes_key)
+        with self.assertRaises(AssertionError) as cm:
+            PINDb.set_pin(cke, payload, pin_aes_key, v2_replay_counter)
 
     def _test_two_users_with_same_pin_impl(self, v2X, v2Y):
         # Get two sets of keys and a new secret

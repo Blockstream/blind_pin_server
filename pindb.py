@@ -144,7 +144,7 @@ class PINDb(object):
 
     @classmethod
     def _save_pin_fields(cls, pin_pubkey_hash, hash_pin_secret, aes_key,
-                         pin_pubkey, aes_pin_data_key, count, replay_counter=None):
+                         pin_pubkey, aes_pin_data_key, count, replay_counter):
 
         # the data is encrypted and then hmac'ed for authentication
         # the encrypted data can't be read by us without the user
@@ -155,7 +155,7 @@ class PINDb(object):
         plaintext = hash_pin_secret + aes_key + count_bytes
         version_bytes = struct.pack('B', VERSION_SUPPORTED)
         if replay_counter is not None:
-            # if this is v2 we save the latest replay_counter and update the version
+            # v2: save the latest replay_counter and update the version
             plaintext += replay_counter
             version_bytes = struct.pack('B', VERSION_LATEST)
         encrypted = encrypt(storage_aes_key, plaintext)
@@ -296,12 +296,9 @@ class PINDb(object):
         our_random = os.urandom(32)
         new_key = hmac_sha256(our_random, entropy)
 
-        # Persist the pin fields
+        # Persist the pin fields including replay_counter
         hash_pin_secret = sha256(pin_secret)
-        replay_bytes = None
-        if replay_counter is not None:
-            replay_init = 0
-            replay_bytes = replay_init.to_bytes(4, byteorder='little', signed=False)
+        replay_bytes = replay_counter or replay_local
         saved_key = cls._save_pin_fields(pin_pubkey_hash, hash_pin_secret, new_key,
                                          pin_pubkey, aes_pin_data_key, 0, replay_bytes)
 
